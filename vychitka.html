@@ -30,6 +30,7 @@
   }
 
   *{ box-sizing:border-box; }
+  [hidden]{ display:none !important; }   /* чтобы авторский display:flex не перебивал атрибут hidden */
   html,body{ height:100%; margin:0; }
   body{
     font-family:var(--ui);
@@ -88,7 +89,13 @@
   .pop-actions{ display:flex; gap:8px; justify-content:flex-end; }
 
   /* ---------- сетка ---------- */
-  .layout{ flex:1 1 auto; display:grid; grid-template-columns:300px 1fr; min-height:0; }
+  .layout{ flex:1 1 auto; display:grid; grid-template-columns:var(--side-w, 300px) 6px 1fr; min-height:0; }
+  .layout.side-collapsed{ grid-template-columns:0 0 1fr; }
+  .layout.side-collapsed .sidebar, .layout.side-collapsed .resizer{ display:none; }
+
+  /* перетаскиваемая граница сайдбара */
+  .resizer{ background:var(--line); cursor:col-resize; }
+  .resizer:hover{ background:var(--accent); }
 
   /* ---------- сайдбар ---------- */
   .sidebar{
@@ -237,7 +244,8 @@
     html, body{ height:auto; overflow:visible; }
     body{ min-height:100%; }
     .topbar{ position:sticky; top:0; z-index:30; }
-    .layout{ grid-template-columns:1fr; }
+    .layout, .layout.side-collapsed{ grid-template-columns:1fr; }
+    .resizer{ display:none; }
     .sidebar{ border-right:0; border-bottom:1px solid var(--line); }
     .blocklist{ max-height:40vh; }
     .panes{ flex-direction:column; flex:0 0 auto; }
@@ -250,6 +258,7 @@
 <body>
 
 <div class="topbar">
+  <button id="sideToggle" class="btn" title="Свернуть/показать список блоков">☰</button>
   <button id="openBtn" class="btn primary">Открыть папку</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
@@ -282,6 +291,8 @@
     </div>
     <ul class="blocklist" id="blockList"></ul>
   </aside>
+
+  <div class="resizer" id="resizer"></div>
 
   <section class="workspace">
     <div class="blockhead" id="blockHead" hidden>
@@ -321,6 +332,8 @@
 const STATUSES = ["todo", "draft", "review", "verified"];
 const MARKER_RE = () => /==\?[\s\S]*?==/g;   // живой открытый вопрос ==?...==
 const LAYOUT_KEY = "vychitka-layout";
+const SIDE_W_KEY = "vychitka-side-w";
+const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 
 /* ---- состояние ---- */
 const state = {
@@ -336,6 +349,7 @@ const state = {
 /* ---- ссылки на DOM ---- */
 const $ = (id) => document.getElementById(id);
 const els = {
+  layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
   addSlotBtn: $("addSlotBtn"), counts: $("counts"),
   pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
@@ -964,6 +978,37 @@ function closePop(){ els.pop.hidden = true; }
 
 /* ===================== события ===================== */
 
+/* ---- боковая панель: сворачивание и ширина (в localStorage) ---- */
+function applySidePrefs(){
+  const w = parseInt(localStorage.getItem(SIDE_W_KEY) || "", 10);
+  if(w) els.layout.style.setProperty("--side-w", w + "px");
+  els.layout.classList.toggle("side-collapsed", localStorage.getItem(SIDE_COLLAPSE_KEY) === "1");
+}
+els.sideToggle.addEventListener("click", () => {
+  const c = els.layout.classList.toggle("side-collapsed");
+  try{ localStorage.setItem(SIDE_COLLAPSE_KEY, c ? "1" : "0"); }catch{}
+});
+(function(){
+  let dragging = false;
+  els.resizer.addEventListener("pointerdown", (e) => {
+    dragging = true; els.resizer.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = "none";
+  });
+  els.resizer.addEventListener("pointermove", (e) => {
+    if(!dragging) return;
+    const w = Math.max(180, Math.min(560, Math.round(e.clientX)));
+    els.layout.style.setProperty("--side-w", w + "px");
+  });
+  const end = () => {
+    if(!dragging) return;
+    dragging = false; document.body.style.userSelect = "";
+    const w = parseInt(els.layout.style.getPropertyValue("--side-w"), 10);
+    if(w) try{ localStorage.setItem(SIDE_W_KEY, String(w)); }catch{}
+  };
+  els.resizer.addEventListener("pointerup", end);
+  els.resizer.addEventListener("pointercancel", end);
+})();
+
 els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.filter.addEventListener("input", renderList);
@@ -1045,6 +1090,7 @@ window.addEventListener("beforeunload", (e) => {
     return;
   }
   state.layout = loadLayout();
+  applySidePrefs();
   try{
     const saved = await IDB.get("root");
     if(saved){
