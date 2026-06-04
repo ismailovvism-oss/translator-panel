@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вычитка — сверка перевода</title>
+<style>
+  /* ---------- токены ---------- */
+  :root{
+    --bg:        #f4f1ea;   /* тёплый бумажный фон */
+    --panel:     #fffdf8;
+    --ink:       #23211c;
+    --ink-soft:  #6b665c;
+    --ink-faint: #a39d90;
+    --line:      #ddd6c8;
+    --line-soft: #ece6d8;
+    --accent:    #6b4f2b;   /* приглушённый коричневый — корешок книги */
+    --sel:       #efe7d4;
+    --mark:      #fff1a8;   /* жёлтая подсветка ==?...== */
+    --mark-edge: #e9d36b;
+
+    --st-todo:     #9aa0a6;
+    --st-draft:    #c98a1e;
+    --st-review:   #2f6fb0;
+    --st-verified: #3f8f54;
+
+    --ui: "Segoe UI", system-ui, -apple-system, "Cantarell", "Noto Sans", sans-serif;
+    --ru: "Iowan Old Style", "Palatino Linotype", "Cambria", Georgia, "Noto Serif", serif;
+    --ar: "Amiri", "Scheherazade New", "Noto Naskh Arabic", "Traditional Arabic", "Geeza Pro", serif;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    font-family:var(--ui);
+    color:var(--ink);
+    background:var(--bg);
+    display:flex; flex-direction:column;
+    overflow:hidden;
+  }
+  button{ font-family:inherit; }
+
+  /* ---------- верхняя панель ---------- */
+  .topbar{
+    flex:0 0 auto;
+    display:flex; align-items:center; gap:12px;
+    padding:8px 14px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+  }
+  .topbar .btn{
+    border:1px solid var(--line);
+    background:#fff;
+    color:var(--ink);
+    padding:6px 12px;
+    border-radius:7px;
+    cursor:pointer;
+    font-size:13px;
+  }
+  .topbar .btn:hover{ border-color:var(--accent); }
+  .topbar .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .root-name{ font-size:13px; color:var(--ink-soft); }
+  .root-name code{ color:var(--ink); font-family:var(--ui); }
+  .spacer{ flex:1 1 auto; }
+  .counts{ font-size:12px; color:var(--ink-soft); display:flex; gap:10px; }
+  .counts .c::before{
+    content:""; display:inline-block; width:8px; height:8px;
+    border-radius:50%; margin-right:5px; vertical-align:middle;
+  }
+  .counts .c.todo::before{ background:var(--st-todo); }
+  .counts .c.draft::before{ background:var(--st-draft); }
+  .counts .c.review::before{ background:var(--st-review); }
+  .counts .c.verified::before{ background:var(--st-verified); }
+
+  /* ---------- сетка ---------- */
+  .layout{ flex:1 1 auto; display:grid; grid-template-columns:300px 1fr; min-height:0; }
+
+  /* ---------- сайдбар ---------- */
+  .sidebar{
+    border-right:1px solid var(--line);
+    background:var(--panel);
+    display:flex; flex-direction:column; min-height:0;
+  }
+  .filter-wrap{ padding:10px; border-bottom:1px solid var(--line-soft); }
+  #filter{
+    width:100%; padding:7px 10px; border:1px solid var(--line);
+    border-radius:7px; font-size:13px; background:#fff; color:var(--ink);
+  }
+  #filter:focus{ outline:none; border-color:var(--accent); }
+  .blocklist{ list-style:none; margin:0; padding:6px; overflow:auto; flex:1 1 auto; }
+  .blockitem{
+    display:flex; align-items:flex-start; gap:9px;
+    padding:8px 9px; border-radius:8px; cursor:pointer;
+    border:1px solid transparent;
+  }
+  .blockitem:hover{ background:var(--sel); }
+  .blockitem.active{ background:#fff; border-color:var(--line); box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .dot{ flex:0 0 auto; width:10px; height:10px; border-radius:50%; margin-top:4px; }
+  .dot.todo{ background:var(--st-todo); }
+  .dot.draft{ background:var(--st-draft); }
+  .dot.review{ background:var(--st-review); }
+  .dot.verified{ background:var(--st-verified); }
+  .dot.none{ background:transparent; border:1px dashed var(--ink-faint); }
+  .bi-text{ min-width:0; }
+  .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
+  .bi-title{ font-size:13px; line-height:1.3; color:var(--ink); overflow-wrap:anywhere; }
+  .bi-title.empty{ color:var(--ink-faint); font-style:italic; }
+
+  /* ---------- рабочая область ---------- */
+  .workspace{ display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .empty-state{
+    flex:1 1 auto; display:flex; align-items:center; justify-content:center;
+    color:var(--ink-faint); font-size:15px; padding:40px; text-align:center;
+  }
+
+  .blockhead{
+    flex:0 0 auto; display:flex; align-items:center; gap:14px;
+    padding:9px 16px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  .bh-title{ font-family:var(--ru); font-size:16px; }
+  .bh-title.empty{ color:var(--ink-faint); font-style:italic; }
+  .bh-pages{ font-size:12px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
+
+  /* сегментный переключатель статуса */
+  .statusbar{ display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .statusbar button{
+    border:0; background:#fff; color:var(--ink-soft);
+    padding:6px 11px; font-size:12px; cursor:pointer; border-right:1px solid var(--line);
+  }
+  .statusbar button:last-child{ border-right:0; }
+  .statusbar button:hover{ background:var(--sel); }
+  .statusbar button.on{ color:#fff; }
+  .statusbar button.on[data-st="todo"]{ background:var(--st-todo); }
+  .statusbar button.on[data-st="draft"]{ background:var(--st-draft); }
+  .statusbar button.on[data-st="review"]{ background:var(--st-review); }
+  .statusbar button.on[data-st="verified"]{ background:var(--st-verified); }
+
+  .save-btn{
+    border:1px solid var(--line); background:#fff; color:var(--ink);
+    padding:6px 13px; border-radius:7px; cursor:pointer; font-size:13px;
+  }
+  .save-btn:hover{ border-color:var(--accent); }
+  .dirty{ font-size:18px; color:var(--st-draft); width:12px; visibility:hidden; }
+  .dirty.on{ visibility:visible; }
+
+  /* ---------- панели ---------- */
+  .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
+  .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; background:var(--panel); }
+  .pane-label{
+    flex:0 0 auto; font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint); padding:7px 16px; border-bottom:1px solid var(--line-soft);
+  }
+
+  /* оригинал (RTL, только чтение) */
+  .source-view{
+    flex:1 1 auto; overflow:auto; padding:18px 22px;
+    font-family:var(--ar); font-size:1.45rem; line-height:2.05; color:var(--ink);
+  }
+  .src-line{ margin:0; }
+  .src-blank{ height:.9em; }
+  .src-head{ font-size:.78rem; line-height:1.5; color:var(--ink-faint); opacity:.85; }
+  .src-comment{ font-size:.72rem; line-height:1.4; color:var(--ink-faint); font-family:var(--ui); direction:ltr; text-align:left; }
+
+  /* перевод (LTR, редактируемое поле с подсветкой) */
+  .editor-wrap{
+    flex:1 1 auto; position:relative; margin:0; min-height:0;
+    border-top:0;
+  }
+  .backdrop, #editor{
+    position:absolute; inset:0; margin:0; border:0;
+    padding:18px 22px;
+    font-family:var(--ru); font-size:1.06rem; line-height:1.75;
+    white-space:pre-wrap; overflow-wrap:break-word; word-break:break-word; tab-size:2;
+    letter-spacing:0;
+  }
+  .backdrop{ overflow:auto; color:transparent; pointer-events:none; }
+  .backdrop mark{ background:var(--mark); box-shadow:0 0 0 1px var(--mark-edge) inset; border-radius:2px; color:transparent; }
+  #editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
+  #editor::placeholder{ color:var(--ink-faint); }
+
+  /* тост / предупреждение */
+  .toast{
+    position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+    background:#2a2620; color:#fdfbf5; padding:11px 18px; border-radius:10px;
+    font-size:13px; box-shadow:0 6px 24px rgba(0,0,0,.22); max-width:520px;
+    opacity:0; pointer-events:none; transition:opacity .18s; z-index:50;
+  }
+  .toast.show{ opacity:1; }
+  .toast.warn{ background:#7a2c20; }
+
+  .unsupported{ padding:40px; max-width:620px; margin:40px auto; line-height:1.6; }
+  .unsupported code{ background:#fff; border:1px solid var(--line); padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <button id="openBtn" class="btn primary">Открыть папку</button>
+  <button id="reopenBtn" class="btn" hidden></button>
+  <span class="root-name" id="rootName"></span>
+  <span class="spacer"></span>
+  <span class="counts" id="counts" hidden></span>
+</div>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="filter-wrap">
+      <input id="filter" type="text" placeholder="Фильтр: заголовок, страницы, статус…">
+    </div>
+    <ul class="blocklist" id="blockList"></ul>
+  </aside>
+
+  <section class="workspace">
+    <div class="blockhead" id="blockHead" hidden>
+      <span class="bh-title" id="bhTitle"></span>
+      <span class="bh-pages" id="bhPages"></span>
+      <span class="spacer"></span>
+      <div class="statusbar" id="statusBar">
+        <button data-st="todo">todo</button>
+        <button data-st="draft">draft</button>
+        <button data-st="review">review</button>
+        <button data-st="verified">verified</button>
+      </div>
+      <button class="save-btn" id="saveBtn">Сохранить</button>
+      <span class="dirty" id="dirty">●</span>
+    </div>
+
+    <div class="panes" id="panes" hidden>
+      <div class="pane">
+        <div class="pane-label">Оригинал · AR</div>
+        <div class="source-view" id="sourceView" dir="rtl"></div>
+      </div>
+      <div class="pane">
+        <div class="pane-label">Перевод · RU</div>
+        <div class="editor-wrap">
+          <div class="backdrop" id="backdrop" aria-hidden="true"></div>
+          <textarea id="editor" dir="ltr" spellcheck="true" placeholder="Перевод…"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="empty-state" id="emptyState">
+      Откройте корневую папку репозитория перевода —<br>в ней должны лежать <code style="font-family:var(--ui)">source/</code> и <code style="font-family:var(--ui)">translation/</code>.
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+
+/* ===================================================================
+   Вычитка — V1. Один файл, ваниль, File System Access API.
+   Модель: source/390-393.md  ↔  translation/390-393 Заголовок.md
+   Спаривание по ведущему диапазону страниц в имени файла.
+   =================================================================== */
+
+const STATUSES = ["todo", "draft", "review", "verified"];
+const MARKER_RE = () => /==\?[\s\S]*?==/g;   // живой открытый вопрос ==?...==
+
+/* ---- состояние ---- */
+const state = {
+  rootHandle: null,
+  sourceDir: null,
+  transDir: null,
+  blocks: [],        // [{range, sortKey, title, status, srcHandle, trHandle}]
+  current: null,     // активный блок
+  savedBody: "",     // тело перевода как на диске (для отслеживания изменений)
+  curFmLines: [],    // строки фронтматтера активного перевода
+};
+
+/* ---- ссылки на DOM ---- */
+const $ = (id) => document.getElementById(id);
+const els = {
+  openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
+  counts: $("counts"), filter: $("filter"), list: $("blockList"),
+  head: $("blockHead"), bhTitle: $("bhTitle"), bhPages: $("bhPages"),
+  statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
+  panes: $("panes"), sourceView: $("sourceView"),
+  backdrop: $("backdrop"), editor: $("editor"), emptyState: $("emptyState"),
+  toast: $("toast"),
+};
+
+/* ===================== утилиты ===================== */
+
+function esc(s){
+  return s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c]));
+}
+
+let toastTimer = null;
+function toast(msg, warn){
+  els.toast.textContent = msg;
+  els.toast.classList.toggle("warn", !!warn);
+  els.toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => els.toast.classList.remove("show"), warn ? 4200 : 1800);
+}
+
+// ведущий диапазон: "390-393.md" -> "390-393"; "390.md" -> "390"
+function rangeOf(name){
+  const m = name.match(/^(\d+(?:-\d+)?)/);
+  return m ? m[1] : null;
+}
+function sortKeyOf(range){
+  const m = range.match(/^(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+// заголовок из имени перевода: "390-393 Заголовок.md" -> "Заголовок"
+function titleOf(name){
+  return name.replace(/\.md$/i, "").replace(/^\d+(?:-\d+)?\s*/, "").trim();
+}
+
+/* ---- фронтматтер: разбор и сборка ---- */
+function splitFrontmatter(text){
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  if(!m) return { fmLines: null, body: text };
+  return { fmLines: m[1].split(/\r?\n/), body: text.slice(m[0].length) };
+}
+function fmGet(lines, key){
+  if(!lines) return null;
+  for(const l of lines){
+    const m = l.match(/^([\w-]+):\s*(.*)$/);
+    if(m && m[1] === key) return m[2].trim();
+  }
+  return null;
+}
+function fmSet(lines, key, val){
+  let found = false;
+  const out = (lines || []).map(l => {
+    const m = l.match(/^([\w-]+):\s*(.*)$/);
+    if(m && m[1] === key){ found = true; return `${key}: ${val}`; }
+    return l;
+  });
+  if(!found) out.push(`${key}: ${val}`);
+  return out;
+}
+// собрать файл перевода: обновлённый фронтматтер + тело
+function buildTranslation(fmLines, body){
+  const fm = (fmLines && fmLines.length) ? fmLines : ["status: todo"];
+  return `---\n${fm.join("\n")}\n---\n\n${body.replace(/^\n+/, "")}`;
+}
+
+/* ===================== доступ к файлам ===================== */
+
+async function ensurePermission(handle, mode){
+  const opts = { mode };
+  if((await handle.queryPermission(opts)) === "granted") return true;
+  if((await handle.requestPermission(opts)) === "granted") return true;
+  return false;
+}
+
+async function readFile(handle){
+  const f = await handle.getFile();
+  return await f.text();
+}
+async function writeFile(handle, content){
+  const w = await handle.createWritable();
+  await w.write(content);
+  await w.close();
+}
+
+/* ---- IndexedDB: запоминаем корневую папку, чтобы выбрать её один раз ---- */
+const IDB = (() => {
+  const open = () => new Promise((res, rej) => {
+    const r = indexedDB.open("vychitka-fs", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("h");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return {
+    async get(k){ const db = await open(); return new Promise((res,rej)=>{ const t=db.transaction("h").objectStore("h").get(k); t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error); }); },
+    async set(k,v){ const db = await open(); return new Promise((res,rej)=>{ const t=db.transaction("h","readwrite").objectStore("h").put(v,k); t.onsuccess=()=>res(); t.onerror=()=>rej(t.error); }); },
+  };
+})();
+
+/* ===================== открытие и сканирование ===================== */
+
+async function pickFolder(){
+  try{
+    const handle = await window.showDirectoryPicker({ id: "vychitka-root", mode: "readwrite" });
+    await IDB.set("root", handle);
+    await useRoot(handle);
+  }catch(e){
+    if(e && e.name === "AbortError") return;
+    console.error(e); toast("Не удалось открыть папку: " + e.message, true);
+  }
+}
+
+async function reopenFolder(){
+  const handle = await IDB.get("root");
+  if(!handle){ toast("Нет сохранённой папки", true); return; }
+  if(!(await ensurePermission(handle, "readwrite"))){
+    toast("Нет доступа к папке — выберите заново", true); return;
+  }
+  await useRoot(handle);
+}
+
+async function useRoot(handle){
+  state.rootHandle = handle;
+  // подпапки source/ и translation/
+  let src, tr;
+  try{ src = await handle.getDirectoryHandle("source"); }
+  catch{ toast("В папке нет подпапки source/", true); return; }
+  try{ tr  = await handle.getDirectoryHandle("translation"); }
+  catch{ toast("В папке нет подпапки translation/", true); return; }
+  state.sourceDir = src;
+  state.transDir  = tr;
+
+  els.rootName.innerHTML = "Папка: <code>" + esc(handle.name) + "</code>";
+  els.reopenBtn.hidden = true;
+
+  await scan();
+}
+
+async function scan(){
+  // собираем источники
+  const sources = new Map();   // range -> handle
+  for await (const [name, h] of state.sourceDir.entries()){
+    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
+    const r = rangeOf(name);
+    if(r) sources.set(r, h);
+  }
+  // собираем переводы (читаем фронтматтер ради статуса)
+  const trans = new Map();     // range -> {handle, title, status}
+  for await (const [name, h] of state.transDir.entries()){
+    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
+    const r = rangeOf(name);
+    if(!r) continue;
+    let status = "todo";
+    try{
+      const { fmLines } = splitFrontmatter(await readFile(h));
+      const s = fmGet(fmLines, "status");
+      if(STATUSES.includes(s)) status = s;
+    }catch{}
+    trans.set(r, { handle: h, title: titleOf(name), status });
+  }
+
+  // объединяем по диапазону
+  const ranges = new Set([...sources.keys(), ...trans.keys()]);
+  const blocks = [];
+  for(const r of ranges){
+    const t = trans.get(r);
+    blocks.push({
+      range: r,
+      sortKey: sortKeyOf(r),
+      title: t ? t.title : "",
+      status: t ? t.status : null,         // null = нет файла перевода
+      srcHandle: sources.get(r) || null,
+      trHandle: t ? t.handle : null,
+    });
+  }
+  blocks.sort((a,b) => a.sortKey - b.sortKey || a.range.localeCompare(b.range));
+  state.blocks = blocks;
+
+  renderCounts();
+  renderList();
+  if(!blocks.length){ toast("Блоки не найдены", true); }
+}
+
+/* ===================== отрисовка списка ===================== */
+
+function renderCounts(){
+  const c = { todo:0, draft:0, review:0, verified:0 };
+  for(const b of state.blocks) if(b.status && c[b.status] !== undefined) c[b.status]++;
+  els.counts.hidden = false;
+  els.counts.innerHTML = STATUSES.map(s =>
+    `<span class="c ${s}">${c[s]}</span>`).join("");
+}
+
+function renderList(){
+  const q = els.filter.value.trim().toLowerCase();
+  els.list.innerHTML = "";
+  for(const b of state.blocks){
+    if(q){
+      const hay = (b.range + " " + b.title + " " + (b.status||"")).toLowerCase();
+      if(!hay.includes(q)) continue;
+    }
+    const li = document.createElement("li");
+    li.className = "blockitem" + (state.current && state.current.range === b.range ? " active" : "");
+    li.dataset.range = b.range;
+    li.innerHTML =
+      `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
+      `<span class="bi-text">` +
+        `<span class="bi-pages">${esc(b.range)}</span><br>` +
+        `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || "(без заголовка)")}</span>` +
+      `</span>`;
+    li.addEventListener("click", () => openBlock(b));
+    els.list.appendChild(li);
+  }
+}
+
+/* ===================== выбор и показ блока ===================== */
+
+async function openBlock(b){
+  if(state.current && isDirty()){
+    if(!confirm("Есть несохранённые изменения. Переключить блок без сохранения?")) return;
+  }
+  state.current = b;
+
+  // подсветить в списке
+  for(const li of els.list.children)
+    li.classList.toggle("active", li.dataset.range === b.range);
+
+  // оригинал (читаем свежим — на случай правок на диске/в git)
+  let srcText = "";
+  if(b.srcHandle){ try{ srcText = await readFile(b.srcHandle); }catch(e){ srcText = ""; } }
+  renderSource(srcText, !!b.srcHandle);
+
+  // перевод
+  let body = "", fmLines = ["status: todo", "pages: " + b.range];
+  if(b.trHandle){
+    try{
+      const parsed = splitFrontmatter(await readFile(b.trHandle));
+      fmLines = parsed.fmLines || fmLines;
+      body = parsed.body.replace(/^\n+/, "").replace(/\s+$/, "");
+    }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
+  }
+  state.curFmLines = fmLines;
+  state.savedBody = body;
+  els.editor.value = body;
+  els.editor.disabled = !b.trHandle;
+  els.editor.placeholder = b.trHandle ? "Перевод…" : "Нет файла перевода для этого диапазона";
+  updateBackdrop();
+
+  // шапка и статус
+  els.bhTitle.textContent = b.title || "(без заголовка)";
+  els.bhTitle.classList.toggle("empty", !b.title);
+  els.bhPages.textContent = b.range;
+  renderStatusBar(b.status);
+  setDirty(false);
+
+  els.emptyState.hidden = true;
+  els.head.hidden = false;
+  els.panes.hidden = false;
+  els.editor.focus();
+}
+
+function renderSource(text, hasFile){
+  if(!hasFile){
+    els.sourceView.innerHTML = `<div class="src-comment">— нет файла оригинала для диапазона ${esc(state.current.range)} —</div>`;
+    return;
+  }
+  const html = text.split(/\r?\n/).map(line => {
+    if(line.trim() === "") return `<div class="src-blank"></div>`;
+    if(/^\s*<!--[\s\S]*-->\s*$/.test(line))                       // комментарий-строка
+      return `<div class="src-comment">${esc(line.trim())}</div>`;
+    const h = line.match(/^#{1,6}\s+(.*)$/);                       // заголовок страницы
+    if(h) return `<div class="src-head">${esc(h[1])}</div>`;
+    return `<div class="src-line">${esc(line)}</div>`;
+  }).join("");
+  els.sourceView.innerHTML = html;
+  els.sourceView.scrollTop = 0;
+}
+
+function renderStatusBar(status){
+  for(const btn of els.statusBar.children)
+    btn.classList.toggle("on", btn.dataset.st === status);
+}
+
+/* ===================== подсветка ==?...== ===================== */
+
+function updateBackdrop(){
+  let html = esc(els.editor.value).replace(MARKER_RE(), m => `<mark>${m}</mark>`);
+  if(html.endsWith("\n")) html += " ";   // чтобы последняя пустая строка отрисовалась
+  els.backdrop.innerHTML = html;
+  els.backdrop.scrollTop = els.editor.scrollTop;
+  els.backdrop.scrollLeft = els.editor.scrollLeft;
+}
+function hasLiveMarker(){
+  return MARKER_RE().test(els.editor.value);
+}
+
+/* ===================== изменения и сохранение ===================== */
+
+function isDirty(){ return els.editor.value !== state.savedBody; }
+function setDirty(on){ els.dirty.classList.toggle("on", on); }
+
+async function save(){
+  const b = state.current;
+  if(!b) return;
+  if(!b.trHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){
+    toast("Нет прав на запись", true); return;
+  }
+  const body = els.editor.value;
+  const content = buildTranslation(state.curFmLines, body);
+  try{
+    await writeFile(b.trHandle, content);
+    state.savedBody = body;
+    setDirty(false);
+    toast("Сохранено");
+  }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
+}
+
+async function setStatus(newStatus){
+  const b = state.current;
+  if(!b || !b.trHandle) return;
+
+  // нельзя verified, пока есть живой ==?...==
+  if(newStatus === "verified" && hasLiveMarker()){
+    toast("Нельзя ставить verified: в переводе остались открытые вопросы ==?…==", true);
+    return;
+  }
+  // фиксируем статус во фронтматтере и сразу пишем файл (вместе с телом)
+  state.curFmLines = fmSet(state.curFmLines, "status", newStatus);
+  b.status = newStatus;
+  renderStatusBar(newStatus);
+
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  try{
+    await writeFile(b.trHandle, buildTranslation(state.curFmLines, els.editor.value));
+    state.savedBody = els.editor.value;
+    setDirty(false);
+    renderCounts();
+    // обновить точку статуса в списке
+    for(const li of els.list.children){
+      if(li.dataset.range === b.range){
+        const dot = li.querySelector(".dot");
+        dot.className = "dot " + newStatus; dot.title = newStatus;
+      }
+    }
+    toast("Статус: " + newStatus);
+  }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
+}
+
+/* ===================== события ===================== */
+
+els.openBtn.addEventListener("click", pickFolder);
+els.reopenBtn.addEventListener("click", reopenFolder);
+els.filter.addEventListener("input", renderList);
+els.saveBtn.addEventListener("click", save);
+
+els.editor.addEventListener("input", () => { updateBackdrop(); setDirty(isDirty()); });
+els.editor.addEventListener("scroll", () => {
+  els.backdrop.scrollTop = els.editor.scrollTop;
+  els.backdrop.scrollLeft = els.editor.scrollLeft;
+});
+
+els.statusBar.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-st]");
+  if(btn) setStatus(btn.dataset.st);
+});
+
+document.addEventListener("keydown", (e) => {
+  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
+    e.preventDefault(); save();
+  }
+});
+
+window.addEventListener("beforeunload", (e) => {
+  if(state.current && isDirty()){ e.preventDefault(); e.returnValue = ""; }
+});
+
+/* ===================== запуск ===================== */
+
+(async function init(){
+  if(!window.showDirectoryPicker){
+    document.body.innerHTML =
+      `<div class="unsupported">
+        <h2>Браузер не поддерживается</h2>
+        <p>Нужен <b>File System Access API</b> — он есть в Chrome и Edge на десктопе.
+        Откройте файл в одном из них.</p>
+        <p>Если открываете двойным кликом как <code>file://</code> — это нормально, API работает и так.</p>
+      </div>`;
+    return;
+  }
+  // предложить повторно открыть запомненную папку
+  try{
+    const saved = await IDB.get("root");
+    if(saved){
+      els.reopenBtn.hidden = false;
+      els.reopenBtn.textContent = "Открыть «" + saved.name + "»";
+    }
+  }catch{}
+})();
+</script>
+</body>
+</html>
