@@ -42,6 +42,7 @@
 
   /* ---------- верхняя панель ---------- */
   .topbar{
+    position:relative;
     flex:0 0 auto;
     display:flex; align-items:center; gap:12px;
     padding:8px 14px;
@@ -71,6 +72,20 @@
   .counts .c.draft::before{ background:var(--st-draft); }
   .counts .c.review::before{ background:var(--st-review); }
   .counts .c.verified::before{ background:var(--st-verified); }
+
+  /* добавление окна-слота */
+  .pop{
+    position:absolute; top:48px; right:14px; z-index:40;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.16); padding:12px; width:262px;
+    display:flex; flex-direction:column; gap:10px; font-size:13px;
+  }
+  .pop label{ display:flex; flex-direction:column; gap:4px; color:var(--ink-soft); }
+  .pop select, .pop input{
+    padding:6px 8px; border:1px solid var(--line); border-radius:7px;
+    font-size:13px; background:#fff; color:var(--ink); font-family:inherit;
+  }
+  .pop-actions{ display:flex; gap:8px; justify-content:flex-end; }
 
   /* ---------- сетка ---------- */
   .layout{ flex:1 1 auto; display:grid; grid-template-columns:300px 1fr; min-height:0; }
@@ -114,7 +129,7 @@
   }
 
   .blockhead{
-    flex:0 0 auto; display:flex; align-items:center; gap:14px;
+    flex:0 0 auto; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
     padding:9px 16px; border-bottom:1px solid var(--line); background:var(--panel);
   }
   .bh-title{ font-family:var(--ru); font-size:16px; }
@@ -143,12 +158,39 @@
   .dirty{ font-size:18px; color:var(--st-draft); width:12px; visibility:hidden; }
   .dirty.on{ visibility:visible; }
 
-  /* ---------- панели ---------- */
+  /* ---------- панели-слоты ---------- */
   .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
-  .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; background:var(--panel); }
+  .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--panel); }
+
+  .pane-head{
+    flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    padding:6px 12px; border-bottom:1px solid var(--line-soft); min-height:34px;
+  }
   .pane-label{
-    flex:0 0 auto; font-size:11px; letter-spacing:.08em; text-transform:uppercase;
-    color:var(--ink-faint); padding:7px 16px; border-bottom:1px solid var(--line-soft);
+    flex:1 1 auto; min-width:0;
+    font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-faint);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .pane-tools{ display:flex; gap:2px; }
+  .pane-tools button, .mini-btn{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:6px; cursor:pointer; font-size:12px; padding:2px 7px; line-height:1.25;
+  }
+  .pane-tools button:hover, .mini-btn:hover{ border-color:var(--accent); color:var(--ink); }
+  .mini-btn{ padding:3px 9px; }
+
+  .pane-body{ flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
+
+  /* пустой слот: «нет файла» / «Начать перевод» */
+  .empty-slot{
+    flex:1 1 auto; min-height:160px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+    color:var(--ink-faint); padding:24px; text-align:center; font-size:14px;
+  }
+  .empty-slot .start-btn{
+    border:1px solid var(--accent); background:var(--accent); color:#fff;
+    padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px;
   }
 
   /* оригинал (RTL, только чтение) */
@@ -161,12 +203,11 @@
   .src-head{ font-size:.78rem; line-height:1.5; color:var(--ink-faint); opacity:.85; }
   .src-comment{ font-size:.72rem; line-height:1.4; color:var(--ink-faint); font-family:var(--ui); direction:ltr; text-align:left; }
 
-  /* перевод (LTR, редактируемое поле с подсветкой) */
+  /* редактируемое поле с подсветкой (перевод / вариант) */
   .editor-wrap{
     flex:1 1 auto; position:relative; margin:0; min-height:0;
-    border-top:0;
   }
-  .backdrop, #editor{
+  .backdrop, .editor{
     position:absolute; inset:0; margin:0; border:0;
     padding:18px 22px;
     font-family:var(--ru); font-size:1.06rem; line-height:1.75;
@@ -175,8 +216,8 @@
   }
   .backdrop{ overflow:auto; color:transparent; pointer-events:none; }
   .backdrop mark{ background:var(--mark); box-shadow:0 0 0 1px var(--mark-edge) inset; border-radius:2px; color:transparent; }
-  #editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
-  #editor::placeholder{ color:var(--ink-faint); }
+  .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
+  .editor::placeholder{ color:var(--ink-faint); }
 
   /* тост / предупреждение */
   .toast{
@@ -190,6 +231,20 @@
 
   .unsupported{ padding:40px; max-width:620px; margin:40px auto; line-height:1.6; }
   .unsupported code{ background:#fff; border:1px solid var(--line); padding:1px 5px; border-radius:4px; }
+
+  /* ---------- адаптив: узкий экран → слоты стопкой ---------- */
+  @media (max-width: 820px){
+    html, body{ height:auto; overflow:visible; }
+    body{ min-height:100%; }
+    .topbar{ position:sticky; top:0; z-index:30; }
+    .layout{ grid-template-columns:1fr; }
+    .sidebar{ border-right:0; border-bottom:1px solid var(--line); }
+    .blocklist{ max-height:40vh; }
+    .panes{ flex-direction:column; flex:0 0 auto; }
+    .pane{ flex:0 0 auto; }
+    .pane .editor-wrap{ height:60vh; flex:0 0 auto; }
+    .pane .source-view{ height:60vh; flex:0 0 auto; }
+  }
 </style>
 </head>
 <body>
@@ -199,7 +254,25 @@
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <span class="spacer"></span>
+  <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
+
+  <div class="pop" id="slotPop" hidden>
+    <label>Тип окна
+      <select id="popRole">
+        <option value="source">Оригинал (AR)</option>
+        <option value="translation">Перевод (RU)</option>
+        <option value="variant">Вариант</option>
+      </select>
+    </label>
+    <label id="popLabelWrap" hidden>Ярлык источника
+      <input id="popLabel" type="text" placeholder="gemini, chatgpt, мой черновик…">
+    </label>
+    <div class="pop-actions">
+      <button id="popCancel" class="btn">Отмена</button>
+      <button id="popAdd" class="btn primary">Добавить</button>
+    </div>
+  </div>
 </div>
 
 <div class="layout">
@@ -225,19 +298,7 @@
       <span class="dirty" id="dirty">●</span>
     </div>
 
-    <div class="panes" id="panes" hidden>
-      <div class="pane">
-        <div class="pane-label">Оригинал · AR</div>
-        <div class="source-view" id="sourceView" dir="rtl"></div>
-      </div>
-      <div class="pane">
-        <div class="pane-label">Перевод · RU</div>
-        <div class="editor-wrap">
-          <div class="backdrop" id="backdrop" aria-hidden="true"></div>
-          <textarea id="editor" dir="ltr" spellcheck="true" placeholder="Перевод…"></textarea>
-        </div>
-      </div>
-    </div>
+    <div class="panes" id="panes" hidden></div>
 
     <div class="empty-state" id="emptyState">
       Откройте корневую папку репозитория перевода —<br>в ней должны лежать <code style="font-family:var(--ui)">source/</code> и <code style="font-family:var(--ui)">translation/</code>.
@@ -251,35 +312,38 @@
 "use strict";
 
 /* ===================================================================
-   Вычитка — V1. Один файл, ваниль, File System Access API.
-   Модель: source/390-393.md  ↔  translation/390-393 Заголовок.md
-   Спаривание по ведущему диапазону страниц в имени файла.
+   Вычитка — фаза 1. Один файл, ваниль, File System Access API.
+   Слоты-окна: произвольная раскладка из source / translation / variant.
+   Раскладка хранится в localStorage пользователя (не в репозитории).
+   Спаривание файлов по ведущему диапазону страниц в имени файла.
    =================================================================== */
 
 const STATUSES = ["todo", "draft", "review", "verified"];
 const MARKER_RE = () => /==\?[\s\S]*?==/g;   // живой открытый вопрос ==?...==
+const LAYOUT_KEY = "vychitka-layout";
 
 /* ---- состояние ---- */
 const state = {
   rootHandle: null,
-  sourceDir: null,
-  transDir: null,
+  dirs: { source: null, translation: null, variants: null },
   blocks: [],        // [{range, sortKey, title, status, srcHandle, trHandle}]
   current: null,     // активный блок
-  savedBody: "",     // тело перевода как на диске (для отслеживания изменений)
-  curFmLines: [],    // строки фронтматтера активного перевода
+  layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
+  slots: [],         // отрисованные слоты текущего блока
+  transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
 };
 
 /* ---- ссылки на DOM ---- */
 const $ = (id) => document.getElementById(id);
 const els = {
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  counts: $("counts"), filter: $("filter"), list: $("blockList"),
+  addSlotBtn: $("addSlotBtn"), counts: $("counts"),
+  pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
+  popLabelWrap: $("popLabelWrap"), popAdd: $("popAdd"), popCancel: $("popCancel"),
+  filter: $("filter"), list: $("blockList"),
   head: $("blockHead"), bhTitle: $("bhTitle"), bhPages: $("bhPages"),
   statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
-  panes: $("panes"), sourceView: $("sourceView"),
-  backdrop: $("backdrop"), editor: $("editor"), emptyState: $("emptyState"),
-  toast: $("toast"),
+  panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
 };
 
 /* ===================== утилиты ===================== */
@@ -306,9 +370,20 @@ function sortKeyOf(range){
   const m = range.match(/^(\d+)/);
   return m ? parseInt(m[1], 10) : 0;
 }
-// заголовок из имени перевода: "390-393 Заголовок.md" -> "Заголовок"
+// заголовок/ярлык из имени: "390-393 Заголовок.md" -> "Заголовок"
 function titleOf(name){
   return name.replace(/\.md$/i, "").replace(/^\d+(?:-\d+)?\s*/, "").trim();
+}
+// ярлык варианта → безопасное имя файла (без разделителей пути и т.п.)
+function sanitizeLabel(s){
+  return String(s || "").replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim();
+}
+// ключ слота — для сопоставления при перестроении раскладки
+function slotKey(spec){
+  return spec.role === "variant" ? "variant|" + spec.label : spec.role;
+}
+function slotKeyOf(slot){
+  return slot.role === "variant" ? "variant|" + slot.label : slot.role;
 }
 
 /* ---- фронтматтер: разбор и сборка ---- */
@@ -335,7 +410,7 @@ function fmSet(lines, key, val){
   if(!found) out.push(`${key}: ${val}`);
   return out;
 }
-// собрать файл перевода: обновлённый фронтматтер + тело
+// собрать файл перевода: обновлённый фронтматтер + нормализованное тело
 function buildTranslation(fmLines, body){
   const fm = (fmLines && fmLines.length) ? fmLines : ["status: todo"];
   return `---\n${fm.join("\n")}\n---\n\n${body.replace(/^\n+/, "")}`;
@@ -349,7 +424,6 @@ async function ensurePermission(handle, mode){
   if((await handle.requestPermission(opts)) === "granted") return true;
   return false;
 }
-
 async function readFile(handle){
   const f = await handle.getFile();
   return await f.text();
@@ -358,6 +432,15 @@ async function writeFile(handle, content){
   const w = await handle.createWritable();
   await w.write(content);
   await w.close();
+}
+// папка variants/ — может отсутствовать; создаётся при первом сохранении варианта
+async function ensureVariantsDir(create){
+  if(state.dirs.variants) return state.dirs.variants;
+  try{
+    const d = await state.rootHandle.getDirectoryHandle("variants", { create: !!create });
+    state.dirs.variants = d;
+    return d;
+  }catch{ return null; }
 }
 
 /* ---- IndexedDB: запоминаем корневую папку, чтобы выбрать её один раз ---- */
@@ -373,6 +456,34 @@ const IDB = (() => {
     async set(k,v){ const db = await open(); return new Promise((res,rej)=>{ const t=db.transaction("h","readwrite").objectStore("h").put(v,k); t.onsuccess=()=>res(); t.onerror=()=>rej(t.error); }); },
   };
 })();
+
+/* ===================== раскладка слотов (localStorage) ===================== */
+
+function normalizeSpec(s){
+  if(!s || typeof s !== "object") return null;
+  if(s.role === "source" || s.role === "translation") return { role: s.role };
+  if(s.role === "variant"){
+    const label = sanitizeLabel(s.label || "");
+    return label ? { role: "variant", label } : null;
+  }
+  return null;
+}
+function loadLayout(){
+  try{
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if(raw){
+      const arr = JSON.parse(raw);
+      if(Array.isArray(arr)){
+        const out = arr.map(normalizeSpec).filter(Boolean);
+        if(out.length) return out;
+      }
+    }
+  }catch{}
+  return [{ role: "source" }, { role: "translation" }];
+}
+function saveLayout(){
+  try{ localStorage.setItem(LAYOUT_KEY, JSON.stringify(state.layout)); }catch{}
+}
 
 /* ===================== открытие и сканирование ===================== */
 
@@ -398,14 +509,14 @@ async function reopenFolder(){
 
 async function useRoot(handle){
   state.rootHandle = handle;
-  // подпапки source/ и translation/
-  let src, tr;
+  let src, tr, varDir = null;
   try{ src = await handle.getDirectoryHandle("source"); }
   catch{ toast("В папке нет подпапки source/", true); return; }
   try{ tr  = await handle.getDirectoryHandle("translation"); }
   catch{ toast("В папке нет подпапки translation/", true); return; }
-  state.sourceDir = src;
-  state.transDir  = tr;
+  try{ varDir = await handle.getDirectoryHandle("variants"); }   // необязательна
+  catch{ varDir = null; }
+  state.dirs = { source: src, translation: tr, variants: varDir };
 
   els.rootName.innerHTML = "Папка: <code>" + esc(handle.name) + "</code>";
   els.reopenBtn.hidden = true;
@@ -414,16 +525,16 @@ async function useRoot(handle){
 }
 
 async function scan(){
-  // собираем источники
+  // источники
   const sources = new Map();   // range -> handle
-  for await (const [name, h] of state.sourceDir.entries()){
+  for await (const [name, h] of state.dirs.source.entries()){
     if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
     const r = rangeOf(name);
     if(r) sources.set(r, h);
   }
-  // собираем переводы (читаем фронтматтер ради статуса)
+  // переводы (читаем фронтматтер ради статуса)
   const trans = new Map();     // range -> {handle, title, status}
-  for await (const [name, h] of state.transDir.entries()){
+  for await (const [name, h] of state.dirs.translation.entries()){
     if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
     const r = rangeOf(name);
     if(!r) continue;
@@ -445,7 +556,7 @@ async function scan(){
       range: r,
       sortKey: sortKeyOf(r),
       title: t ? t.title : "",
-      status: t ? t.status : null,         // null = нет файла перевода
+      status: t ? t.status : null,        // null = нет файла перевода
       srcHandle: sources.get(r) || null,
       trHandle: t ? t.handle : null,
     });
@@ -493,64 +604,225 @@ function renderList(){
 /* ===================== выбор и показ блока ===================== */
 
 async function openBlock(b){
-  if(state.current && isDirty()){
+  if(state.current && anyDirty()){
     if(!confirm("Есть несохранённые изменения. Переключить блок без сохранения?")) return;
   }
   state.current = b;
 
-  // подсветить в списке
   for(const li of els.list.children)
     li.classList.toggle("active", li.dataset.range === b.range);
 
-  // оригинал (читаем свежим — на случай правок на диске/в git)
-  let srcText = "";
-  if(b.srcHandle){ try{ srcText = await readFile(b.srcHandle); }catch(e){ srcText = ""; } }
-  renderSource(srcText, !!b.srcHandle);
-
-  // перевод
-  let body = "", fmLines = ["status: todo", "pages: " + b.range];
-  if(b.trHandle){
-    try{
-      const parsed = splitFrontmatter(await readFile(b.trHandle));
-      fmLines = parsed.fmLines || fmLines;
-      body = parsed.body.replace(/^\n+/, "").replace(/\s+$/, "");
-    }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
-  }
-  state.curFmLines = fmLines;
-  state.savedBody = body;
-  els.editor.value = body;
-  els.editor.disabled = !b.trHandle;
-  els.editor.placeholder = b.trHandle ? "Перевод…" : "Нет файла перевода для этого диапазона";
-  updateBackdrop();
-
-  // шапка и статус
   els.bhTitle.textContent = b.title || "(без заголовка)";
   els.bhTitle.classList.toggle("empty", !b.title);
   els.bhPages.textContent = b.range;
-  renderStatusBar(b.status);
-  setDirty(false);
 
   els.emptyState.hidden = true;
   els.head.hidden = false;
   els.panes.hidden = false;
-  els.editor.focus();
+
+  await renderSlots({ reload: true });
+
+  if(state.transSlot && state.transSlot.editor) state.transSlot.editor.focus();
 }
 
-function renderSource(text, hasFile){
-  if(!hasFile){
-    els.sourceView.innerHTML = `<div class="src-comment">— нет файла оригинала для диапазона ${esc(state.current.range)} —</div>`;
-    return;
-  }
-  const html = text.split(/\r?\n/).map(line => {
+/* ===================== слоты-окна ===================== */
+
+function renderSourceHTML(text){
+  return text.split(/\r?\n/).map(line => {
     if(line.trim() === "") return `<div class="src-blank"></div>`;
-    if(/^\s*<!--[\s\S]*-->\s*$/.test(line))                       // комментарий-строка
+    if(/^\s*<!--[\s\S]*-->\s*$/.test(line))
       return `<div class="src-comment">${esc(line.trim())}</div>`;
-    const h = line.match(/^#{1,6}\s+(.*)$/);                       // заголовок страницы
+    const h = line.match(/^#{1,6}\s+(.*)$/);
     if(h) return `<div class="src-head">${esc(h[1])}</div>`;
     return `<div class="src-line">${esc(line)}</div>`;
   }).join("");
-  els.sourceView.innerHTML = html;
-  els.sourceView.scrollTop = 0;
+}
+
+function buildSlotDOM(spec, i){
+  const slot = {
+    role: spec.role, label: spec.label || "", index: i,
+    editor: null, backdrop: null, sourceView: null,
+    fileHandle: null, fmLines: null, savedText: "", dot: null,
+    sourceText: "", hadFile: false,
+  };
+  const pane = document.createElement("div");
+  pane.className = "pane"; pane.dataset.index = i; pane.dataset.role = spec.role;
+
+  const head = document.createElement("div");
+  head.className = "pane-head";
+
+  const label = document.createElement("span");
+  label.className = "pane-label";
+  label.textContent =
+    spec.role === "source" ? "Оригинал · AR" :
+    spec.role === "translation" ? "Перевод · RU" :
+    "Вариант · " + spec.label;
+  head.appendChild(label);
+
+  if(spec.role === "variant"){
+    const save = document.createElement("button");
+    save.className = "mini-btn"; save.dataset.action = "save-variant";
+    save.textContent = "Сохранить как вариант";
+    head.appendChild(save);
+    const dot = document.createElement("span");
+    dot.className = "dirty"; dot.textContent = "●";
+    slot.dot = dot; head.appendChild(dot);
+  }
+
+  const tools = document.createElement("span");
+  tools.className = "pane-tools";
+  tools.innerHTML =
+    `<button data-tool="left" title="Левее / выше">◂</button>` +
+    `<button data-tool="right" title="Правее / ниже">▸</button>` +
+    `<button data-tool="remove" title="Убрать окно">×</button>`;
+  head.appendChild(tools);
+
+  const body = document.createElement("div");
+  body.className = "pane-body";
+
+  pane.appendChild(head); pane.appendChild(body);
+  slot.pane = pane; slot.head = head; slot.body = body;
+  return slot;
+}
+
+// создать редактируемое поле (перевод / вариант) с подсветкой ==?...==
+function makeEditor(slot, value){
+  slot.body.innerHTML = "";
+  const wrap = document.createElement("div"); wrap.className = "editor-wrap";
+  const bd = document.createElement("div"); bd.className = "backdrop"; bd.setAttribute("aria-hidden","true");
+  const ta = document.createElement("textarea");
+  ta.className = "editor"; ta.dir = "ltr"; ta.spellcheck = true;
+  ta.placeholder = slot.role === "variant" ? "Вставьте вариант перевода…" : "Перевод…";
+  ta.value = value || "";
+  wrap.appendChild(bd); wrap.appendChild(ta); slot.body.appendChild(wrap);
+  slot.editor = ta; slot.backdrop = bd;
+
+  ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); });
+  ta.addEventListener("scroll", () => { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; });
+  updateBackdrop(slot);
+}
+
+function makeSource(slot, text, hasFile){
+  slot.body.innerHTML = "";
+  const view = document.createElement("div");
+  view.className = "source-view"; view.dir = "rtl";
+  view.innerHTML = hasFile
+    ? renderSourceHTML(text)
+    : `<div class="src-comment">— нет файла оригинала для диапазона ${esc(state.current.range)} —</div>`;
+  slot.body.appendChild(view);
+  slot.sourceView = view;
+}
+
+function makeStart(slot){
+  slot.body.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "empty-slot";
+  box.innerHTML =
+    `<div>Перевод для диапазона ${esc(state.current.range)} ещё не начат.</div>` +
+    `<button class="start-btn" data-action="start-translation">Начать перевод</button>`;
+  slot.body.appendChild(box);
+}
+
+function updateBackdrop(slot){
+  if(!slot.backdrop || !slot.editor) return;
+  let html = esc(slot.editor.value).replace(MARKER_RE(), m => `<mark>${m}</mark>`);
+  if(html.endsWith("\n")) html += " ";
+  slot.backdrop.innerHTML = html;
+  slot.backdrop.scrollTop = slot.editor.scrollTop;
+  slot.backdrop.scrollLeft = slot.editor.scrollLeft;
+}
+
+// загрузить содержимое слота с диска (свежим)
+async function loadSlotFromDisk(slot, b){
+  if(slot.role === "source"){
+    let text = "", has = !!b.srcHandle;
+    if(has){ try{ text = await readFile(b.srcHandle); }catch{ text = ""; has = false; } }
+    slot.fileHandle = b.srcHandle || null; slot.hadFile = has; slot.sourceText = text;
+    makeSource(slot, text, has);
+  } else if(slot.role === "translation"){
+    if(b.trHandle){
+      let body = "", fmLines = ["status: todo", "pages: " + b.range, "glossary_checked: false"];
+      try{
+        const p = splitFrontmatter(await readFile(b.trHandle));
+        fmLines = p.fmLines || fmLines;
+        body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
+      }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
+      slot.fileHandle = b.trHandle; slot.fmLines = fmLines; slot.savedText = body;
+      makeEditor(slot, body);
+    } else {
+      slot.fileHandle = null; slot.fmLines = null; slot.savedText = "";
+      makeStart(slot);
+    }
+  } else { // variant
+    let text = "", h = null;
+    const dir = state.dirs.variants;
+    if(dir){
+      const name = `${b.range} ${slot.label}.md`;
+      try{ h = await dir.getFileHandle(name); text = await readFile(h); }
+      catch{ h = null; text = ""; }
+    }
+    slot.fileHandle = h; slot.savedText = text;
+    makeEditor(slot, text);
+  }
+}
+
+// восстановить содержимое слота из памяти (при переупорядочивании/добавлении) —
+// чтобы не потерять несохранённые правки
+function restoreSlot(slot, old){
+  if(slot.role === "source"){
+    slot.fileHandle = old.fileHandle; slot.hadFile = old.hadFile; slot.sourceText = old.sourceText;
+    makeSource(slot, old.sourceText || "", !!old.hadFile);
+  } else if(slot.role === "translation"){
+    if(old.fileHandle){
+      slot.fileHandle = old.fileHandle; slot.fmLines = old.fmLines; slot.savedText = old.savedText;
+      makeEditor(slot, old.curValue != null ? old.curValue : old.savedText);
+    } else {
+      slot.fileHandle = null; slot.fmLines = null; slot.savedText = "";
+      makeStart(slot);
+    }
+  } else { // variant
+    slot.fileHandle = old.fileHandle; slot.savedText = old.savedText;
+    makeEditor(slot, old.curValue != null ? old.curValue : old.savedText);
+  }
+}
+
+// перестроить все слоты по текущей раскладке
+async function renderSlots({ reload = false, reloadKeys = null } = {}){
+  const b = state.current;
+  if(!b) return;
+
+  // снимок текущих значений (чтобы пережить перестроение)
+  const oldByKey = new Map();
+  for(const s of state.slots){
+    if(s.editor) s.curValue = s.editor.value;
+    oldByKey.set(slotKeyOf(s), s);
+  }
+
+  els.panes.innerHTML = "";
+  const slots = [];
+  for(let i = 0; i < state.layout.length; i++){
+    const slot = buildSlotDOM(state.layout[i], i);
+    els.panes.appendChild(slot.pane);
+    slots.push(slot);
+  }
+  state.slots = slots;
+
+  for(const slot of slots){
+    const key = slotKeyOf(slot);
+    const old = oldByKey.get(key);
+    const mustLoad = reload || !old || (reloadKeys && reloadKeys.has(key));
+    if(mustLoad) await loadSlotFromDisk(slot, b);
+    else restoreSlot(slot, old);
+  }
+
+  // шапка блока: статус/сохранение работают с основным переводом
+  const ts = slots.find(s => s.role === "translation") || null;
+  state.transSlot = ts;
+  const hasFile = !!(ts && ts.fileHandle);
+  els.statusBar.hidden = !hasFile;
+  els.saveBtn.hidden = !hasFile;
+  renderStatusBar(hasFile ? b.status : null);
+  updateDirtyUI();
 }
 
 function renderStatusBar(status){
@@ -558,62 +830,87 @@ function renderStatusBar(status){
     btn.classList.toggle("on", btn.dataset.st === status);
 }
 
-/* ===================== подсветка ==?...== ===================== */
-
-function updateBackdrop(){
-  let html = esc(els.editor.value).replace(MARKER_RE(), m => `<mark>${m}</mark>`);
-  if(html.endsWith("\n")) html += " ";   // чтобы последняя пустая строка отрисовалась
-  els.backdrop.innerHTML = html;
-  els.backdrop.scrollTop = els.editor.scrollTop;
-  els.backdrop.scrollLeft = els.editor.scrollLeft;
-}
-function hasLiveMarker(){
-  return MARKER_RE().test(els.editor.value);
-}
-
 /* ===================== изменения и сохранение ===================== */
 
-function isDirty(){ return els.editor.value !== state.savedBody; }
-function setDirty(on){ els.dirty.classList.toggle("on", on); }
+function slotDirty(s){
+  return !!s.editor && (s.role === "translation" || s.role === "variant") && s.editor.value !== s.savedText;
+}
+function anyDirty(){ return state.slots.some(slotDirty); }
+function updateDirtyUI(){
+  els.dirty.classList.toggle("on", anyDirty());
+  for(const s of state.slots) if(s.dot) s.dot.classList.toggle("on", slotDirty(s));
+}
+function hasLiveMarker(text){ return MARKER_RE().test(text); }
 
-async function save(){
-  const b = state.current;
-  if(!b) return;
-  if(!b.trHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){
-    toast("Нет прав на запись", true); return;
-  }
-  const body = els.editor.value;
-  const content = buildTranslation(state.curFmLines, body);
+async function saveTranslation(slot){
+  const ts = slot || state.transSlot;
+  if(!ts || !ts.fileHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  const body = ts.editor.value;
   try{
-    await writeFile(b.trHandle, content);
-    state.savedBody = body;
-    setDirty(false);
+    await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, body));
+    ts.savedText = body; updateDirtyUI();
     toast("Сохранено");
   }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
 }
 
-async function setStatus(newStatus){
+async function saveVariant(slot){
   const b = state.current;
-  if(!b || !b.trHandle) return;
+  if(!b || !slot) return;
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  try{
+    let h = slot.fileHandle;
+    if(!h){
+      const dir = await ensureVariantsDir(true);
+      if(!dir){ toast("Не удалось создать папку variants/", true); return; }
+      h = await dir.getFileHandle(`${b.range} ${slot.label}.md`, { create: true });
+      slot.fileHandle = h;
+    }
+    await writeFile(h, slot.editor.value);
+    slot.savedText = slot.editor.value; updateDirtyUI();
+    toast("Вариант сохранён: " + slot.label);
+  }catch(e){ console.error(e); toast("Ошибка записи варианта: " + e.message, true); }
+}
 
-  // нельзя verified, пока есть живой ==?...==
-  if(newStatus === "verified" && hasLiveMarker()){
+async function startTranslation(){
+  const b = state.current;
+  if(!b || b.trHandle) return;
+  const raw = prompt("Заголовок перевода (можно оставить пустым):", "");
+  if(raw === null) return;                    // отмена
+  const title = raw.trim();
+  const name = title ? `${b.range} ${title}.md` : `${b.range}.md`;
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  try{
+    const handle = await state.dirs.translation.getFileHandle(name, { create: true });
+    const content = buildTranslation(["status: todo", "pages: " + b.range, "glossary_checked: false"], "");
+    await writeFile(handle, content);
+    b.trHandle = handle; b.title = title; b.status = "todo";
+    els.bhTitle.textContent = b.title || "(без заголовка)";
+    els.bhTitle.classList.toggle("empty", !b.title);
+    renderCounts(); renderList();
+    await renderSlots({ reloadKeys: new Set(["translation"]) });
+    if(state.transSlot && state.transSlot.editor) state.transSlot.editor.focus();
+    toast("Перевод начат");
+  }catch(e){ console.error(e); toast("Не удалось создать файл: " + e.message, true); }
+}
+
+async function setStatus(newStatus){
+  const b = state.current, ts = state.transSlot;
+  if(!b || !ts || !ts.fileHandle) return;
+
+  if(newStatus === "verified" && hasLiveMarker(ts.editor.value)){
     toast("Нельзя ставить verified: в переводе остались открытые вопросы ==?…==", true);
     return;
   }
-  // фиксируем статус во фронтматтере и сразу пишем файл (вместе с телом)
-  state.curFmLines = fmSet(state.curFmLines, "status", newStatus);
+  ts.fmLines = fmSet(ts.fmLines, "status", newStatus);
   b.status = newStatus;
   renderStatusBar(newStatus);
 
   if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
   try{
-    await writeFile(b.trHandle, buildTranslation(state.curFmLines, els.editor.value));
-    state.savedBody = els.editor.value;
-    setDirty(false);
+    await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, ts.editor.value));
+    ts.savedText = ts.editor.value; updateDirtyUI();
     renderCounts();
-    // обновить точку статуса в списке
     for(const li of els.list.children){
       if(li.dataset.range === b.range){
         const dot = li.querySelector(".dot");
@@ -624,32 +921,114 @@ async function setStatus(newStatus){
   }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
 }
 
+// Ctrl/Cmd+S — сохранить активное окно (или основной перевод)
+function saveFocused(){
+  const ae = document.activeElement;
+  const s = state.slots.find(x => x.editor === ae);
+  if(s){ if(s.role === "translation") saveTranslation(s); else saveVariant(s); return; }
+  if(state.transSlot && state.transSlot.fileHandle) saveTranslation();
+}
+
+/* ===================== операции с раскладкой ===================== */
+
+function addSlot(spec){
+  state.layout.push(spec); saveLayout();
+  if(state.current) renderSlots({ reload: false });
+}
+function removeSlot(index){
+  const spec = state.layout[index];
+  if(!spec) return;
+  const key = slotKey(spec);
+  const s = state.slots.find(x => slotKeyOf(x) === key);
+  if(s && slotDirty(s) && !confirm("В этом окне есть несохранённые изменения. Убрать окно и потерять их?")) return;
+  state.layout.splice(index, 1); saveLayout();
+  if(state.current) renderSlots({ reload: false });
+}
+function moveSlot(index, dir){
+  const j = index + dir;
+  if(j < 0 || j >= state.layout.length) return;
+  const tmp = state.layout[index]; state.layout[index] = state.layout[j]; state.layout[j] = tmp;
+  saveLayout();
+  if(state.current) renderSlots({ reload: false });
+}
+
+/* ---- попап добавления окна ---- */
+function openPop(){
+  els.popRole.value = "variant";
+  els.popLabelWrap.hidden = false;
+  els.popLabel.value = "";
+  els.pop.hidden = false;
+  els.popLabel.focus();
+}
+function closePop(){ els.pop.hidden = true; }
+
 /* ===================== события ===================== */
 
 els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.filter.addEventListener("input", renderList);
-els.saveBtn.addEventListener("click", save);
-
-els.editor.addEventListener("input", () => { updateBackdrop(); setDirty(isDirty()); });
-els.editor.addEventListener("scroll", () => {
-  els.backdrop.scrollTop = els.editor.scrollTop;
-  els.backdrop.scrollLeft = els.editor.scrollLeft;
-});
+els.saveBtn.addEventListener("click", () => saveTranslation());
 
 els.statusBar.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-st]");
   if(btn) setStatus(btn.dataset.st);
 });
 
+// действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
+els.panes.addEventListener("click", (e) => {
+  const tool = e.target.closest("[data-tool]");
+  if(tool){
+    const pane = tool.closest(".pane");
+    const idx = parseInt(pane.dataset.index, 10);
+    const act = tool.dataset.tool;
+    if(act === "left") moveSlot(idx, -1);
+    else if(act === "right") moveSlot(idx, 1);
+    else if(act === "remove") removeSlot(idx);
+    return;
+  }
+  const sv = e.target.closest("[data-action='save-variant']");
+  if(sv){
+    const pane = sv.closest(".pane");
+    saveVariant(state.slots[parseInt(pane.dataset.index, 10)]);
+    return;
+  }
+  if(e.target.closest("[data-action='start-translation']")) startTranslation();
+});
+
+// попап добавления окна
+els.addSlotBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if(els.pop.hidden) openPop(); else closePop();
+});
+els.popRole.addEventListener("change", () => {
+  els.popLabelWrap.hidden = els.popRole.value !== "variant";
+});
+els.popAdd.addEventListener("click", () => {
+  const role = els.popRole.value;
+  let spec;
+  if(role === "variant"){
+    const label = sanitizeLabel(els.popLabel.value);
+    if(!label){ toast("Введите ярлык варианта (например, gemini)", true); return; }
+    spec = { role: "variant", label };
+  } else {
+    spec = { role };
+  }
+  addSlot(spec); closePop();
+});
+els.popCancel.addEventListener("click", closePop);
+document.addEventListener("click", (e) => {
+  if(!els.pop.hidden && !els.pop.contains(e.target) && e.target !== els.addSlotBtn) closePop();
+});
+
 document.addEventListener("keydown", (e) => {
   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
-    e.preventDefault(); save();
+    e.preventDefault(); saveFocused();
   }
+  if(e.key === "Escape" && !els.pop.hidden) closePop();
 });
 
 window.addEventListener("beforeunload", (e) => {
-  if(state.current && isDirty()){ e.preventDefault(); e.returnValue = ""; }
+  if(state.current && anyDirty()){ e.preventDefault(); e.returnValue = ""; }
 });
 
 /* ===================== запуск ===================== */
@@ -665,7 +1044,7 @@ window.addEventListener("beforeunload", (e) => {
       </div>`;
     return;
   }
-  // предложить повторно открыть запомненную папку
+  state.layout = loadLayout();
   try{
     const saved = await IDB.get("root");
     if(saved){
