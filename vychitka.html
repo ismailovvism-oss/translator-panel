@@ -229,6 +229,9 @@
   .backdrop{ overflow:auto; color:transparent; pointer-events:none; }
   .backdrop mark{ background:var(--mark); box-shadow:0 0 0 1px var(--mark-edge) inset; border-radius:2px; color:transparent; }
   .backdrop .sec-active{ background:rgba(107,79,43,.12); border-radius:3px; }
+  /* пометка строки-заголовка в редактируемом поле: фон + боковая полоса,
+     без изменения размера шрифта (метрики textarea и подложки совпадают) */
+  .backdrop .bd-head{ background:rgba(107,79,43,.10); box-shadow:inset 3px 0 0 0 var(--accent); border-radius:2px; }
   .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
   .editor::placeholder{ color:var(--ink-faint); }
 
@@ -791,17 +794,25 @@ function makeStart(slot){
 
 function markHTML(t){ return esc(t).replace(MARKER_RE(), m => `<mark>${m}</mark>`); }
 
+// Подложка собирается поблочно одним слоем: строка-заголовок получает фон+полосу
+// (.bd-head), активный сектор — подсветку (.sec-active), маркеры ==?…== — жёлтый.
+// Всё вложенными спанами, без отдельных накладываемых слоёв.
 function updateBackdrop(slot){
   if(!slot.backdrop || !slot.editor) return;
   const text = slot.editor.value;
-  const range = state.activeSector != null ? sectorRange(parseBlocks(text), state.activeSector) : null;
-  let html;
-  if(range){
-    const [s, e] = range;
-    html = markHTML(text.slice(0, s)) + `<span class="sec-active">` + markHTML(text.slice(s, e)) + `</span>` + markHTML(text.slice(e));
-  } else {
-    html = markHTML(text);
+  const blocks = parseBlocks(text);
+  let html = "", cursor = 0;
+  for(const b of blocks){
+    if(b.start > cursor) html += markHTML(text.slice(cursor, b.start));   // межблочные \n
+    let inner = markHTML(text.slice(b.start, b.end));
+    if(b.type === "sector" && b.kind === "heading")
+      inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
+    if(b.type === "sector" && b.idx === state.activeSector)
+      inner = `<span class="sec-active">${inner}</span>`;
+    html += inner;
+    cursor = b.end;
   }
+  if(cursor < text.length) html += markHTML(text.slice(cursor));
   if(text.endsWith("\n")) html += " ";
   slot.backdrop.innerHTML = html;
   slot.backdrop.scrollTop = slot.editor.scrollTop;
