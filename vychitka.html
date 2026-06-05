@@ -222,6 +222,7 @@
   }
   .cmd-row{ display:flex; gap:8px; align-items:center; }
   .cmd-row .cmd-name{ flex:1 1 auto; }
+  .cmd-rs-label{ font-size:13px; color:var(--ink-soft); flex:0 0 auto; }
   .cmd-card input, .cmd-card select, .cmd-card textarea{
     font-family:inherit; font-size:13px; color:var(--ink); background:#fff;
     border:1px solid var(--line); border-radius:6px; padding:5px 8px;
@@ -459,6 +460,14 @@
     </label>
     <div class="cmds-wrap">
       <div class="cmds-head">
+        <span>Своды правил перевода</span>
+        <span class="hint">именованные наборы правил; команды на них ссылаются (правка свода обновляет все команды)</span>
+      </div>
+      <div id="rsList" class="cmd-list"></div>
+      <button id="rsAdd" class="btn-mini" type="button">＋ Добавить свод</button>
+    </div>
+    <div class="cmds-wrap">
+      <div class="cmds-head">
         <span>Команды запроса</span>
         <span class="hint">{text} — выбранный текст; для «оригинал + перевод» — {original} и {translation}</span>
       </div>
@@ -513,6 +522,7 @@ const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 const API_KEY_KEY  = "vychitka-api-key";
 const MODELS_KEY   = "vychitka-models";
 const COMMANDS_KEY = "vychitka-commands";
+const RULESETS_KEY = "vychitka-rulesets";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 // дефолты — лишь подсказки; точные id моделей пользователь берёт на openrouter.ai/models
 const DEFAULT_MODELS = [
@@ -534,12 +544,13 @@ function scopeLabel(id){ const s = SCOPES.find(x => x.id === id); return s ? s.l
 function scopeHint(id){ const s = SCOPES.find(x => x.id === id); return s ? s.hint : id; }
 
 // предустановленные команды-примеры (редактируемы и удаляемы в Настройках)
+// ruleset = имя свода правил, на который ссылается команда ("" = без свода)
 const DEFAULT_COMMANDS = [
-  { name: "Перевести",          scope: "orig-all",    prompt: "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{text}" },
-  { name: "Тафсир аята",        scope: "orig-sector", prompt: "Дай краткий тафсир (толкование) следующего фрагмента:\n\n{text}" },
-  { name: "Разбор грамматики",  scope: "orig-sector", prompt: "Разбери грамматику (إعراب) следующего арабского фрагмента, по словам:\n\n{text}" },
-  { name: "Проверь мой перевод",scope: "orig-trans",  prompt: "Сверь перевод с оригиналом и укажи ошибки, неточности и пропуски.\n\nОригинал:\n{original}\n\nПеревод:\n{translation}" },
-  { name: "Сделай естественнее",scope: "trans-all",   prompt: "Перепиши следующий русский перевод, сделав его естественнее и глаже, не искажая смысл:\n\n{text}" },
+  { name: "Перевести",          scope: "orig-all",    ruleset: "", prompt: "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{text}" },
+  { name: "Тафсир аята",        scope: "orig-sector", ruleset: "", prompt: "Дай краткий тафсир (толкование) следующего фрагмента:\n\n{text}" },
+  { name: "Разбор грамматики",  scope: "orig-sector", ruleset: "", prompt: "Разбери грамматику (إعراب) следующего арабского фрагмента, по словам:\n\n{text}" },
+  { name: "Проверь мой перевод",scope: "orig-trans",  ruleset: "", prompt: "Сверь перевод с оригиналом и укажи ошибки, неточности и пропуски.\n\nОригинал:\n{original}\n\nПеревод:\n{translation}" },
+  { name: "Сделай естественнее",scope: "trans-all",   ruleset: "", prompt: "Перепиши следующий русский перевод, сделав его естественнее и глаже, не искажая смысл:\n\n{text}" },
 ];
 
 // настройки — только в localStorage пользователя, никогда в файлы/логи
@@ -558,7 +569,7 @@ function getCommands(){
       const a = JSON.parse(raw);
       if(Array.isArray(a)){
         const out = a.filter(c => c && typeof c.name === "string" && typeof c.prompt === "string" && SCOPES.some(s => s.id === c.scope));
-        if(out.length) return out.map(c => ({ name: c.name, scope: c.scope, prompt: c.prompt }));
+        if(out.length) return out.map(c => ({ name: c.name, scope: c.scope, prompt: c.prompt, ruleset: typeof c.ruleset === "string" ? c.ruleset : "" }));
       }
     }
   }catch{}
@@ -566,6 +577,20 @@ function getCommands(){
 }
 function setCommands(arr){ try{ localStorage.setItem(COMMANDS_KEY, JSON.stringify(arr)); }catch{} }
 function commandByName(name){ const cs = getCommands(); return cs.find(c => c.name === name) || cs[0] || DEFAULT_COMMANDS[0]; }
+
+// своды правил перевода — именованные тексты; команды на них ссылаются по имени
+function getRulesets(){
+  try{
+    const raw = localStorage.getItem(RULESETS_KEY);
+    if(raw){
+      const a = JSON.parse(raw);
+      if(Array.isArray(a)) return a.filter(r => r && typeof r.name === "string" && typeof r.text === "string").map(r => ({ name: r.name, text: r.text }));
+    }
+  }catch{}
+  return [];
+}
+function setRulesets(arr){ try{ localStorage.setItem(RULESETS_KEY, JSON.stringify(arr)); }catch{} }
+function rulesetByName(name){ return name ? getRulesets().find(r => r.name === name) || null : null; }
 
 /* ---- состояние ---- */
 const state = {
@@ -580,6 +605,7 @@ const state = {
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
   pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
   editCommands: [],  // рабочая копия команд в открытом окне настроек
+  editRulesets: [],  // рабочая копия сводов правил в открытом окне настроек
 };
 let reqTicker = null;     // интервал обновления счётчиков времени в баннерах
 
@@ -592,6 +618,7 @@ const els = {
   modelsList: $("modelsList"),
   settingsModal: $("settingsModal"), setKey: $("setKey"),
   setModels: $("setModels"), cmdList: $("cmdList"), cmdAdd: $("cmdAdd"),
+  rsList: $("rsList"), rsAdd: $("rsAdd"),
   setSave: $("setSave"), setCancel: $("setCancel"),
   reqModal: $("reqModal"), reqTitle: $("reqTitle"), reqModel: $("reqModel"),
   reqPrompt: $("reqPrompt"), reqStatus: $("reqStatus"), reqSend: $("reqSend"), reqCancel: $("reqCancel"),
@@ -1425,9 +1452,14 @@ async function resolveCommand(cmd){
   return { text: "" };
 }
 function buildCommandPrompt(cmd, parts){
-  if(cmd.scope === "orig-trans")
-    return cmd.prompt.split("{original}").join(parts.original || "").split("{translation}").join(parts.translation || "");
-  return cmd.prompt.split("{text}").join(parts.text || "");
+  let body = cmd.scope === "orig-trans"
+    ? cmd.prompt.split("{original}").join(parts.original || "").split("{translation}").join(parts.translation || "")
+    : cmd.prompt.split("{text}").join(parts.text || "");
+  // свод правил подставляется (резолвится по имени при каждом запросе, не копируется в команду)
+  const rs = rulesetByName(cmd.ruleset);
+  if(rs && rs.text && rs.text.trim())
+    body = "Соблюдай правила перевода:\n" + rs.text.trim() + "\n\n" + body;
+  return body;
 }
 // команда, назначенная слоту (по имени), с откатом на первую/«Перевести»
 function currentCommandFor(slot){ return commandByName(slot.command || (getCommands()[0] && getCommands()[0].name)); }
@@ -1598,9 +1630,29 @@ function renderModelsDatalist(){
   els.modelsList.innerHTML = getModels().map(m => `<option value="${esc(m)}"></option>`).join("");
 }
 
+// редактор сводов правил: рабочая копия в state.editRulesets
+function renderRulesetsEditor(){
+  els.rsList.innerHTML = "";
+  state.editRulesets.forEach((r, idx) => {
+    const card = document.createElement("div");
+    card.className = "cmd-card"; card.dataset.idx = idx;
+    card.innerHTML =
+      `<div class="cmd-row">` +
+        `<input class="cmd-name" data-rs-field="name" placeholder="Имя свода (напр. «Академический»)" value="${esc(r.name)}">` +
+        `<button class="cmd-del" data-action="rs-del" type="button">Удалить</button>` +
+      `</div>` +
+      `<textarea data-rs-field="text" placeholder="Текст правил перевода: терминология, регистр, стиль, чего избегать…">${esc(r.text)}</textarea>`;
+    els.rsList.appendChild(card);
+  });
+}
+
 // редактор команд: рабочая копия в state.editCommands, синхронится с DOM на лету
 function renderCommandsEditor(){
   els.cmdList.innerHTML = "";
+  const rsOpts = (sel) =>
+    `<option value="">— без свода —</option>` +
+    state.editRulesets.filter(r => (r.name || "").trim())
+      .map(r => `<option value="${esc(r.name)}"${r.name === sel ? " selected" : ""}>${esc(r.name)}</option>`).join("");
   state.editCommands.forEach((c, idx) => {
     const card = document.createElement("div");
     card.className = "cmd-card"; card.dataset.idx = idx;
@@ -1611,6 +1663,8 @@ function renderCommandsEditor(){
         `<select data-field="scope">${opts}</select>` +
         `<button class="cmd-del" data-action="cmd-del" type="button">Удалить</button>` +
       `</div>` +
+      `<div class="cmd-row"><span class="cmd-rs-label">Свод правил:</span>` +
+        `<select data-field="ruleset">${rsOpts(c.ruleset || "")}</select></div>` +
       `<textarea data-field="prompt" placeholder="Текст инструкции модели… ({text} или {original}/{translation})">${esc(c.prompt)}</textarea>`;
     els.cmdList.appendChild(card);
   });
@@ -1618,20 +1672,25 @@ function renderCommandsEditor(){
 function openSettings(){
   els.setKey.value = getApiKey();
   els.setModels.value = getModels().join("\n");
+  state.editRulesets = getRulesets().map(r => ({ ...r }));
   state.editCommands = getCommands().map(c => ({ ...c }));
+  renderRulesetsEditor();
   renderCommandsEditor();
   els.settingsModal.hidden = false;
 }
 function closeSettings(){ els.settingsModal.hidden = true; }
 function saveSettings(){
-  // отфильтровать пустые (без имени или промта)
+  const rsets = state.editRulesets
+    .map(r => ({ name: (r.name || "").trim(), text: r.text || "" }))
+    .filter(r => r.name);
   const cmds = state.editCommands
-    .map(c => ({ name: (c.name || "").trim(), scope: c.scope, prompt: c.prompt }))
+    .map(c => ({ name: (c.name || "").trim(), scope: c.scope, ruleset: c.ruleset || "", prompt: c.prompt }))
     .filter(c => c.name && c.prompt && SCOPES.some(s => s.id === c.scope));
   try{
     localStorage.setItem(API_KEY_KEY, els.setKey.value.trim());
     const models = els.setModels.value.split("\n").map(s => s.trim()).filter(Boolean);
     localStorage.setItem(MODELS_KEY, models.join("\n"));
+    setRulesets(rsets);
     setCommands(cmds.length ? cmds : DEFAULT_COMMANDS);
   }catch{ toast("Не удалось сохранить настройки в браузере", true); return; }
   renderModelsDatalist();
@@ -1809,6 +1868,27 @@ els.cmdList.addEventListener("click", (e) => {
   const card = del.closest(".cmd-card");
   state.editCommands.splice(parseInt(card.dataset.idx, 10), 1);
   renderCommandsEditor();
+});
+
+// редактор сводов правил
+els.rsAdd.addEventListener("click", () => {
+  state.editRulesets.push({ name: "", text: "" });
+  renderRulesetsEditor(); renderCommandsEditor();   // обновить выбор свода в командах
+});
+function syncRsField(e){
+  const field = e.target.dataset.rsField; if(!field) return;
+  const card = e.target.closest(".cmd-card"); if(!card) return;
+  const r = state.editRulesets[parseInt(card.dataset.idx, 10)];
+  if(r) r[field] = e.target.value;
+}
+els.rsList.addEventListener("input", syncRsField);
+els.rsList.addEventListener("change", syncRsField);
+els.rsList.addEventListener("click", (e) => {
+  const del = e.target.closest("[data-action='rs-del']");
+  if(!del) return;
+  const card = del.closest(".cmd-card");
+  state.editRulesets.splice(parseInt(card.dataset.idx, 10), 1);
+  renderRulesetsEditor(); renderCommandsEditor();
 });
 
 // окно API-запроса
