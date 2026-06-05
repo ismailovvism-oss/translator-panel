@@ -211,6 +211,7 @@
   }
   .cmd-select:focus{ outline:none; border-color:var(--accent); }
   .cmd-hint{ font-size:11px; color:var(--ink-faint); }
+  .req-group{ display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap; }
 
   /* редактор команд в настройках */
   .cmds-wrap{ display:flex; flex-direction:column; gap:8px; }
@@ -539,6 +540,7 @@ const SCOPES = [
   { id: "trans-all",   label: "Перевод целиком",             hint: "весь перевод" },
   { id: "trans-sector",label: "Перевод — активный сектор",   hint: "сектор перевода" },
   { id: "orig-trans",  label: "Оригинал + перевод (целиком)",hint: "оригинал + перевод" },
+  { id: "self",        label: "Текст этого слота",           hint: "текст этого окна" },
 ];
 function scopeLabel(id){ const s = SCOPES.find(x => x.id === id); return s ? s.label : id; }
 function scopeHint(id){ const s = SCOPES.find(x => x.id === id); return s ? s.hint : id; }
@@ -763,7 +765,12 @@ const IDB = (() => {
 function normalizeSpec(s){
   if(!s || typeof s !== "object") return null;
   const collapsed = !!s.collapsed;
-  if(s.role === "source" || s.role === "translation") return { role: s.role, collapsed };
+  if(s.role === "source") return { role: "source", collapsed };
+  if(s.role === "translation") return {
+    role: "translation", collapsed,
+    model: typeof s.model === "string" ? s.model : "",
+    command: typeof s.command === "string" ? s.command : "",
+  };
   if(s.role === "variant"){
     const label = sanitizeLabel(s.label || "");
     if(!label) return null;
@@ -1001,31 +1008,42 @@ function buildSlotDOM(spec, i){
     "Вариант · " + spec.label;
   head.appendChild(label);
 
-  // у варианта — выбор команды, модели и кнопка запроса (API-режим)
-  if(spec.role === "variant"){
+  // у варианта и перевода — выбор команды, модели и кнопка запроса (API-режим).
+  // group прячется, если в окне нет редактируемого поля (перевод без файла).
+  if(spec.role === "variant" || spec.role === "translation"){
+    const grp = document.createElement("span");
+    grp.className = "req-group";
     const cmds = getCommands();
     const cur = slot.command || (cmds[0] && cmds[0].name) || "";
     slot.command = cur;
     const sel = document.createElement("select");
     sel.className = "cmd-select"; sel.dataset.action = "cmd-select"; sel.title = "Команда запроса";
     sel.innerHTML = cmds.map(c => `<option value="${esc(c.name)}"${c.name === cur ? " selected" : ""}>${esc(c.name)}</option>`).join("");
-    head.appendChild(sel);
+    grp.appendChild(sel);
     const hint = document.createElement("span");
     hint.className = "cmd-hint"; slot.cmdHint = hint;
-    const cc = commandByName(cur); hint.textContent = "→ " + scopeHint(cc.scope);
-    head.appendChild(hint);
-
+    hint.textContent = "→ " + scopeHint(commandByName(cur).scope);
+    grp.appendChild(hint);
     const model = document.createElement("input");
     model.className = "model-input"; model.type = "text";
     model.setAttribute("list", "modelsList");
     model.placeholder = "модель"; model.value = spec.model || "";
     model.dataset.action = "model-input";
-    head.appendChild(model);
+    grp.appendChild(model);
     const req = document.createElement("button");
     req.className = "mini-btn"; req.dataset.action = "request";
     req.textContent = "Запросить";
-    head.appendChild(req);
-    slot.reqBtn = req;
+    grp.appendChild(req);
+    slot.reqBtn = req; slot.reqGroup = grp;
+    head.appendChild(grp);
+  }
+
+  // у варианта — «Взять в перевод» (перенос содержимого в окно перевода, без записи в файл)
+  if(spec.role === "variant"){
+    const take = document.createElement("button");
+    take.className = "mini-btn"; take.dataset.action = "to-translation";
+    take.textContent = "Взять в перевод";
+    head.appendChild(take);
   }
 
   // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
@@ -1230,8 +1248,11 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   renderStatusBar(hasFile ? b.status : null);
   updateDirtyUI();
 
+  // контролы запроса видны только если в окне есть редактируемое поле
+  // (перевод без файла показывает «Начать перевод», запрос там не нужен)
+  for(const s of slots) if(s.reqGroup) s.reqGroup.hidden = !s.editor;
   // восстановить индикатор идущего запроса (баннер/кнопка) после перерисовки
-  for(const s of slots) if(s.role === "variant") reflectSlotRequest(s);
+  for(const s of slots) if(s.reqBtn) reflectSlotRequest(s);
 }
 
 function renderStatusBar(status){
@@ -1437,7 +1458,8 @@ function sectorTextOf(full){
   return r ? full.slice(r[0], r[1]) : null;
 }
 // разрешить текст(ы) по scope команды; {error} — мягкое сообщение, запрос не уходит
-async function resolveCommand(cmd){
+async function resolveCommand(cmd, slot){
+  if(cmd.scope === "self")      return { text: slot && slot.editor ? slot.editor.value : "" };
   if(cmd.scope === "orig-all")  return { text: await currentOriginal() };
   if(cmd.scope === "trans-all") return { text: await currentTranslation() };
   if(cmd.scope === "orig-trans") return { original: await currentOriginal(), translation: await currentTranslation() };
@@ -1496,15 +1518,20 @@ async function callOpenRouter(key, model, prompt, signal){
   return content;
 }
 
-// открыть окно запроса для слота-варианта по его команде (текст уже подставлен)
+// человекочитаемое имя окна для заголовка/тостов
+function slotDisplayName(slot){
+  return slot.role === "variant" ? slot.label : slot.role === "translation" ? "Перевод" : "Оригинал";
+}
+
+// открыть окно запроса (вариант или перевод) по команде слота; текст уже подставлен
 async function openRequest(slot){
   const b = state.current;
-  if(!b || !slot || slot.role !== "variant") return;
+  if(!b || !slot || !(slot.role === "variant" || slot.role === "translation") || !slot.editor) return;
   const cmd = currentCommandFor(slot);
-  const resolved = await resolveCommand(cmd);
+  const resolved = await resolveCommand(cmd, slot);
   if(resolved.error){ toast(resolved.error, true); return; }   // напр. нет активного сектора
   state.requestSlot = slot;
-  els.reqTitle.textContent = slot.label + " · " + cmd.name;
+  els.reqTitle.textContent = slotDisplayName(slot) + " · " + cmd.name;
   els.reqModel.value = slot.model || (getModels()[0] || "");
   els.reqPrompt.value = buildCommandPrompt(cmd, resolved);
   els.reqStatus.textContent = ""; els.reqStatus.className = "req-status";
@@ -1515,8 +1542,8 @@ async function openRequest(slot){
 function closeRequest(){ els.reqModal.hidden = true; state.requestSlot = null; }
 function reqError(msg){ els.reqStatus.className = "req-status error"; els.reqStatus.textContent = msg; }
 
-// ключ фонового запроса = блок + ярлык варианта
-function reqKey(blockLabel, variantLabel){ return blockLabel + " " + variantLabel; }
+// ключ фонового запроса = блок + ключ слота (роль / ярлык варианта)
+function reqKey(blockLabel, slotKeyStr){ return blockLabel + " " + slotKeyStr; }
 
 function elapsedStr(ts){
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -1529,19 +1556,19 @@ function stopTicker(){ if(reqTicker && state.pending.size === 0){ clearInterval(
 function updateReqBanners(){
   if(!state.current) return;
   for(const s of state.slots){
-    if(s.role !== "variant" || !s.reqBanner) continue;
-    const info = state.pending.get(reqKey(state.current.label, s.label));
+    if(!s.reqBanner) continue;
+    const info = state.pending.get(reqKey(state.current.label, slotKeyOf(s)));
     const el = info && s.reqBanner.querySelector(".req-elapsed");
     if(el) el.textContent = elapsedStr(info.startedAt);
   }
 }
 
-// показать/обновить состояние запроса в слоте-варианте (кнопка + баннер со спиннером,
+// показать/обновить состояние запроса в окне (кнопка + баннер со спиннером,
 // названием модели, счётчиком времени и кнопкой «Отменить»)
 function reflectSlotRequest(slot){
-  if(!slot || slot.role !== "variant") return;
-  const info = state.current ? state.pending.get(reqKey(state.current.label, slot.label)) : null;
-  if(slot.reqBtn){ slot.reqBtn.disabled = !!info; slot.reqBtn.textContent = info ? "Запрос…" : "Запросить"; }
+  if(!slot || !slot.reqBtn) return;
+  const info = state.current ? state.pending.get(reqKey(state.current.label, slotKeyOf(slot))) : null;
+  slot.reqBtn.disabled = !!info; slot.reqBtn.textContent = info ? "Запрос…" : "Запросить";
   if(slot.reqBanner){ slot.reqBanner.remove(); slot.reqBanner = null; }
   if(info && slot.body){
     const bn = document.createElement("div");
@@ -1556,29 +1583,29 @@ function reflectSlotRequest(slot){
     slot.reqBanner = bn;
   }
 }
-// обновить отображение для блока+ярлыка, если он сейчас виден
-function reflectRequestFor(blockLabel, variantLabel){
+// обновить отображение для блока+ключа слота, если он сейчас виден
+function reflectRequestFor(blockLabel, slotKeyStr){
   if(!state.current || state.current.label !== blockLabel) return;
-  const slot = state.slots.find(s => s.role === "variant" && s.label === variantLabel);
+  const slot = state.slots.find(s => slotKeyOf(s) === slotKeyStr);
   if(slot) reflectSlotRequest(slot);
 }
 
-// подставить ответ в окно варианта, если оно всё ещё показано для того же блока
-function applyResponse(blockLabel, variantLabel, content){
+// подставить ответ в окно, если оно всё ещё показано для того же блока (в файл НЕ пишем)
+function applyResponse(blockLabel, slotKeyStr, name, content){
   if(state.current && state.current.label === blockLabel){
-    const slot = state.slots.find(s => s.role === "variant" && s.label === variantLabel);
+    const slot = state.slots.find(s => slotKeyOf(s) === slotKeyStr);
     if(slot && slot.editor){
       slot.editor.value = content;
       updateBackdrop(slot); updateDirtyUI(); syncActiveFromEditor(slot);
-      toast("Ответ модели подставлен в «" + variantLabel + "» — проверьте и сохраните");
+      toast("Ответ модели подставлен в «" + name + "» — проверьте и сохраните");
       return;
     }
   }
-  toast("Ответ для «" + variantLabel + "» (блок «" + blockLabel + "») готов, но окно сейчас не показано", true);
+  toast("Ответ для «" + name + "» (блок «" + blockLabel + "») готов, но окно сейчас не показано", true);
 }
 
 // отправить запрос ФОНОВО: модалка сразу закрывается, работа не блокируется,
-// ответ сам подтянется в окно варианта по готовности
+// ответ сам подтянется в окно по готовности (для перевода — без автосохранения)
 function sendRequest(){
   const slot = state.requestSlot;
   if(!slot) return;
@@ -1587,42 +1614,51 @@ function sendRequest(){
   const model = els.reqModel.value.trim();
   if(!model){ reqError("Укажите модель."); return; }
   const prompt = els.reqPrompt.value;
-  const blockLabel = state.current.label, variantLabel = slot.label;
-  const k = reqKey(blockLabel, variantLabel);
-  if(state.pending.has(k)){ reqError("Запрос для этого варианта уже идёт."); return; }
+  const blockLabel = state.current.label, sk = slotKeyOf(slot), name = slotDisplayName(slot);
+  const k = reqKey(blockLabel, sk);
+  if(state.pending.has(k)){ reqError("Запрос для этого окна уже идёт."); return; }
 
   // запомнить выбранную модель на слоте/в раскладке
   slot.model = model;
-  if(state.layout[slot.index] && state.layout[slot.index].role === "variant"){
-    state.layout[slot.index].model = model; saveLayout();
-  }
+  const spec = state.layout[slot.index];
+  if(spec && (spec.role === "variant" || spec.role === "translation")){ spec.model = model; saveLayout(); }
 
   const controller = new AbortController();
   state.pending.set(k, { model, startedAt: Date.now(), controller });
   closeRequest();
-  reflectRequestFor(blockLabel, variantLabel);
+  reflectRequestFor(blockLabel, sk);
   startTicker();
   toast("Запрос отправлен — можно продолжать работу");
 
   callOpenRouter(key, model, prompt, controller.signal).then(content => {
     state.pending.delete(k);
-    reflectRequestFor(blockLabel, variantLabel);
+    reflectRequestFor(blockLabel, sk);
     stopTicker();
-    applyResponse(blockLabel, variantLabel, content);
+    applyResponse(blockLabel, sk, name, content);
   }).catch(err => {
     state.pending.delete(k);
-    reflectRequestFor(blockLabel, variantLabel);
+    reflectRequestFor(blockLabel, sk);
     stopTicker();
-    if(err && err.name === "AbortError") toast("Запрос отменён: «" + variantLabel + "»");
-    else toast("Запрос («" + variantLabel + "»): " + (err && err.message || err), true);
+    if(err && err.name === "AbortError") toast("Запрос отменён: «" + name + "»");
+    else toast("Запрос («" + name + "»): " + (err && err.message || err), true);
   });
 }
 
-// отменить идущий запрос для слота-варианта
+// отменить идущий запрос для окна
 function cancelRequest(slot){
   if(!slot || !state.current) return;
-  const info = state.pending.get(reqKey(state.current.label, slot.label));
+  const info = state.pending.get(reqKey(state.current.label, slotKeyOf(slot)));
   if(info && info.controller) info.controller.abort();
+}
+
+// перенести содержимое варианта в окно перевода (в поле, без записи в файл)
+function takeIntoTranslation(slot){
+  if(!slot || !slot.editor) return;
+  const ts = state.transSlot;
+  if(!ts || !ts.editor){ toast("Нет окна перевода с файлом — добавьте окно «Перевод» или начните перевод", true); return; }
+  ts.editor.value = slot.editor.value;
+  updateBackdrop(ts); updateDirtyUI(); syncActiveFromEditor(ts);
+  toast("Перенесено в перевод — проверьте и сохраните");
 }
 
 /* ---- настройки ---- */
@@ -1931,11 +1967,17 @@ els.panes.addEventListener("click", (e) => {
     cancelRequest(state.slots[parseInt(cr.closest(".pane").dataset.index, 10)]);
     return;
   }
+  const tt = e.target.closest("[data-action='to-translation']");
+  if(tt){
+    takeIntoTranslation(state.slots[parseInt(tt.closest(".pane").dataset.index, 10)]);
+    return;
+  }
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
 });
 
-// выбор модели/команды в слоте-варианте — пишем в раскладку (localStorage)
+// выбор модели/команды в окне (вариант или перевод) — пишем в раскладку (localStorage)
 els.panes.addEventListener("change", (e) => {
+  const requestable = (spec) => spec && (spec.role === "variant" || spec.role === "translation");
   const cs = e.target.closest("[data-action='cmd-select']");
   if(cs){
     const idx = parseInt(cs.closest(".pane").dataset.index, 10);
@@ -1944,7 +1986,7 @@ els.panes.addEventListener("change", (e) => {
       slot.command = cs.value;
       if(slot.cmdHint) slot.cmdHint.textContent = "→ " + scopeHint(commandByName(cs.value).scope);
     }
-    if(spec && spec.role === "variant"){ spec.command = cs.value; saveLayout(); }
+    if(requestable(spec)){ spec.command = cs.value; saveLayout(); }
     return;
   }
   const mi = e.target.closest("[data-action='model-input']");
@@ -1952,7 +1994,7 @@ els.panes.addEventListener("change", (e) => {
   const idx = parseInt(mi.closest(".pane").dataset.index, 10);
   const slot = state.slots[idx], spec = state.layout[idx];
   if(slot) slot.model = mi.value.trim();
-  if(spec && spec.role === "variant"){ spec.model = mi.value.trim(); saveLayout(); }
+  if(requestable(spec)){ spec.model = mi.value.trim(); saveLayout(); }
 });
 
 // попап добавления окна
