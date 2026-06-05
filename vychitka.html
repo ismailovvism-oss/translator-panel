@@ -206,8 +206,13 @@
     font-family:var(--ar); font-size:1.45rem; line-height:2.05; color:var(--ink);
   }
   .src-line{ margin:0; }
-  .src-blank{ height:.9em; }
-  .src-head{ font-size:.78rem; line-height:1.5; color:var(--ink-faint); opacity:.85; }
+  .src-blank{ height:.7em; }
+  .source-view .sec{ white-space:pre-wrap; cursor:pointer; border-radius:5px; padding:0 4px; margin:0 -4px; }
+  .source-view .sec.active{ background:rgba(107,79,43,.12); }
+  .src-head{ font-weight:600; color:var(--ink); line-height:1.4; margin:.15em 0; }
+  .src-head.h1{ font-size:1.95rem; }
+  .src-head.h2{ font-size:1.62rem; }
+  .src-head.h3{ font-size:1.36rem; }
   .src-comment{ font-size:.72rem; line-height:1.4; color:var(--ink-faint); font-family:var(--ui); direction:ltr; text-align:left; }
 
   /* редактируемое поле с подсветкой (перевод / вариант) */
@@ -223,6 +228,7 @@
   }
   .backdrop{ overflow:auto; color:transparent; pointer-events:none; }
   .backdrop mark{ background:var(--mark); box-shadow:0 0 0 1px var(--mark-edge) inset; border-radius:2px; color:transparent; }
+  .backdrop .sec-active{ background:rgba(107,79,43,.12); border-radius:3px; }
   .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
   .editor::placeholder{ color:var(--ink-faint); }
 
@@ -344,6 +350,7 @@ const state = {
   layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
   slots: [],         // отрисованные слоты текущего блока
   transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
+  activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
 };
 
 /* ---- ссылки на DOM ---- */
@@ -622,6 +629,7 @@ async function openBlock(b){
     if(!confirm("Есть несохранённые изменения. Переключить блок без сохранения?")) return;
   }
   state.current = b;
+  state.activeSector = null;
 
   for(const li of els.list.children)
     li.classList.toggle("active", li.dataset.range === b.range);
@@ -641,14 +649,54 @@ async function openBlock(b){
 
 /* ===================== слоты-окна ===================== */
 
+/* ---- сегментация на секторы ----
+   Сектор = абзац (текст между пустыми строками) ИЛИ markdown-заголовок
+   (`^#{1,6}\s+`, всегда отдельный сектор). Строки-комментарии <!-- ... -->
+   сектором не считаются и пропускаются (рисуются бледно только в оригинале).
+   Возвращаем блоки с символьными смещениями в исходном тексте. */
+function parseBlocks(text){
+  const blocks = [];
+  let pos = 0, sectorIdx = 0, para = null;
+  const flush = () => {
+    if(para){ blocks.push({ type:"sector", kind:"para", level:0, idx:sectorIdx++, start:para.start, end:para.end }); para = null; }
+  };
+  const parts = text.split("\n");
+  for(let i = 0; i < parts.length; i++){
+    const raw = parts[i];
+    const start = pos, end = pos + raw.length;
+    pos = end + 1;                       // +1 за символ перевода строки
+    const t = raw.trim();
+    if(t === ""){ flush(); blocks.push({ type:"blank", start, end }); continue; }
+    if(/^<!--[\s\S]*-->$/.test(t)){ flush(); blocks.push({ type:"comment", start, end, text:t }); continue; }
+    const h = raw.match(/^(#{1,6})\s+(.*)$/);
+    if(h){ flush(); blocks.push({ type:"sector", kind:"heading", level:h[1].length, idx:sectorIdx++, start, end, text:h[2] }); continue; }
+    if(!para) para = { start, end }; else para.end = end;
+  }
+  flush();
+  return blocks;
+}
+function sectorsOf(blocks){ return blocks.filter(b => b.type === "sector"); }
+function sectorRange(blocks, idx){
+  const s = sectorsOf(blocks).find(b => b.idx === idx);
+  return s ? [s.start, s.end] : null;
+}
+function sectorAtCaret(blocks, caret){
+  const secs = sectorsOf(blocks);
+  for(const s of secs) if(caret >= s.start && caret <= s.end) return s.idx;
+  let best = null;
+  for(const s of secs) if(s.end < caret) best = s.idx;   // ближайший предшествующий
+  return best;
+}
+
 function renderSourceHTML(text){
-  return text.split(/\r?\n/).map(line => {
-    if(line.trim() === "") return `<div class="src-blank"></div>`;
-    if(/^\s*<!--[\s\S]*-->\s*$/.test(line))
-      return `<div class="src-comment">${esc(line.trim())}</div>`;
-    const h = line.match(/^#{1,6}\s+(.*)$/);
-    if(h) return `<div class="src-head">${esc(h[1])}</div>`;
-    return `<div class="src-line">${esc(line)}</div>`;
+  return parseBlocks(text).map(b => {
+    if(b.type === "blank")   return `<div class="src-blank"></div>`;
+    if(b.type === "comment") return `<div class="src-comment">${esc(b.text)}</div>`;
+    if(b.kind === "heading"){
+      const lv = Math.min(b.level, 3);
+      return `<div class="sec src-head h${lv}" data-idx="${b.idx}">${esc(b.text)}</div>`;
+    }
+    return `<div class="sec src-para" data-idx="${b.idx}">${esc(text.slice(b.start, b.end))}</div>`;
   }).join("");
 }
 
@@ -711,7 +759,11 @@ function makeEditor(slot, value){
   wrap.appendChild(bd); wrap.appendChild(ta); slot.body.appendChild(wrap);
   slot.editor = ta; slot.backdrop = bd;
 
-  ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); });
+  const sync = () => syncActiveFromEditor(slot);
+  ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); });
+  ta.addEventListener("click", sync);
+  ta.addEventListener("keyup", sync);
+  ta.addEventListener("focus", sync);
   ta.addEventListener("scroll", () => { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; });
   updateBackdrop(slot);
 }
@@ -737,13 +789,46 @@ function makeStart(slot){
   slot.body.appendChild(box);
 }
 
+function markHTML(t){ return esc(t).replace(MARKER_RE(), m => `<mark>${m}</mark>`); }
+
 function updateBackdrop(slot){
   if(!slot.backdrop || !slot.editor) return;
-  let html = esc(slot.editor.value).replace(MARKER_RE(), m => `<mark>${m}</mark>`);
-  if(html.endsWith("\n")) html += " ";
+  const text = slot.editor.value;
+  const range = state.activeSector != null ? sectorRange(parseBlocks(text), state.activeSector) : null;
+  let html;
+  if(range){
+    const [s, e] = range;
+    html = markHTML(text.slice(0, s)) + `<span class="sec-active">` + markHTML(text.slice(s, e)) + `</span>` + markHTML(text.slice(e));
+  } else {
+    html = markHTML(text);
+  }
+  if(text.endsWith("\n")) html += " ";
   slot.backdrop.innerHTML = html;
   slot.backdrop.scrollTop = slot.editor.scrollTop;
   slot.backdrop.scrollLeft = slot.editor.scrollLeft;
+}
+
+/* ---- синхронная подсветка активного сектора во всех слотах ---- */
+function highlightSourceSector(slot){
+  if(!slot.sourceView) return;
+  for(const el of slot.sourceView.querySelectorAll(".sec.active")) el.classList.remove("active");
+  if(state.activeSector != null){
+    const el = slot.sourceView.querySelector(`.sec[data-idx="${state.activeSector}"]`);
+    if(el) el.classList.add("active");
+  }
+}
+function setActiveSector(idx){
+  if(idx === state.activeSector) return;
+  state.activeSector = idx;
+  for(const s of state.slots){
+    if(s.role === "source") highlightSourceSector(s);
+    else if(s.editor) updateBackdrop(s);
+  }
+}
+function syncActiveFromEditor(slot){
+  if(!slot.editor) return;
+  const idx = sectorAtCaret(parseBlocks(slot.editor.value), slot.editor.selectionStart);
+  if(idx != null) setActiveSector(idx);
 }
 
 // загрузить содержимое слота с диска (свежим)
@@ -837,6 +922,8 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   els.saveBtn.hidden = !hasFile;
   renderStatusBar(hasFile ? b.status : null);
   updateDirtyUI();
+
+  for(const s of slots) if(s.role === "source") highlightSourceSector(s);
 }
 
 function renderStatusBar(status){
@@ -1021,6 +1108,9 @@ els.statusBar.addEventListener("click", (e) => {
 
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
+  const sec = e.target.closest(".source-view .sec");
+  if(sec){ setActiveSector(parseInt(sec.dataset.idx, 10)); return; }
+
   const tool = e.target.closest("[data-tool]");
   if(tool){
     const pane = tool.closest(".pane");
