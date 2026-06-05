@@ -174,6 +174,16 @@
   .modal-box textarea{ resize:vertical; min-height:120px; }
   .modal-box textarea:focus, .modal-box input:focus{ outline:none; border-color:var(--accent); }
   .modal-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
+  .req-status{ font-size:13px; min-height:18px; color:var(--ink-soft); }
+  .req-status.loading{ color:var(--st-review); }
+  .req-status.error{ color:#9a2b1c; }
+
+  /* выбор модели в окне-варианте */
+  .model-input{
+    font-family:inherit; font-size:12px; color:var(--ink); background:#fff;
+    border:1px solid var(--line); border-radius:6px; padding:2px 7px; width:150px;
+  }
+  .model-input:focus{ outline:none; border-color:var(--accent); }
 
   /* сегментный переключатель статуса */
   .statusbar{ display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -295,6 +305,7 @@
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <span class="spacer"></span>
+  <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый блок из вставленного текста" hidden>Новый блок</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
@@ -371,6 +382,48 @@
   </div>
 </div>
 
+<datalist id="modelsList"></datalist>
+
+<div class="modal" id="settingsModal" hidden>
+  <div class="modal-box">
+    <h3>Настройки</h3>
+    <label>Ключ API OpenRouter
+      <span class="hint">хранится только в вашем браузере; в репозиторий не попадает</span>
+      <input id="setKey" type="password" autocomplete="off" placeholder="sk-or-…">
+    </label>
+    <label>Шаблон запроса
+      <span class="hint">`{original}` заменяется текстом оригинала текущего блока</span>
+      <textarea id="setPrompt" rows="4"></textarea>
+    </label>
+    <label>Модели (по одной в строке)
+      <span class="hint">список для выбора в окнах-вариантах; можно вписать свою строку прямо в слоте</span>
+      <textarea id="setModels" rows="5"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button id="setCancel" class="btn">Отмена</button>
+      <button id="setSave" class="btn primary">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="reqModal" hidden>
+  <div class="modal-box">
+    <h3>Запрос перевода — <span id="reqTitle"></span></h3>
+    <label>Модель
+      <input id="reqModel" type="text" list="modelsList" placeholder="напр. openai/gpt-4o">
+    </label>
+    <label>Текст запроса
+      <span class="hint">оригинал уже подставлен; можно подправить разово перед отправкой</span>
+      <textarea id="reqPrompt" rows="11"></textarea>
+    </label>
+    <div class="req-status" id="reqStatus"></div>
+    <div class="modal-actions">
+      <button id="reqCancel" class="btn">Отмена</button>
+      <button id="reqSend" class="btn primary">Отправить</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -390,6 +443,30 @@ const LAYOUT_KEY = "vychitka-layout";
 const SIDE_W_KEY = "vychitka-side-w";
 const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 
+/* ---- API-режим (OpenRouter) ---- */
+const API_KEY_KEY = "vychitka-api-key";
+const PROMPT_KEY  = "vychitka-prompt-template";
+const MODELS_KEY  = "vychitka-models";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_PROMPT = "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{original}";
+const DEFAULT_MODELS = [
+  "openai/gpt-4o",
+  "anthropic/claude-3.7-sonnet",
+  "google/gemini-2.5-pro",
+  "deepseek/deepseek-chat",
+];
+
+// настройки — только в localStorage пользователя, никогда в файлы/логи
+function getApiKey(){ try{ return localStorage.getItem(API_KEY_KEY) || ""; }catch{ return ""; } }
+function getPrompt(){ try{ return localStorage.getItem(PROMPT_KEY) || DEFAULT_PROMPT; }catch{ return DEFAULT_PROMPT; } }
+function getModels(){
+  try{
+    const raw = localStorage.getItem(MODELS_KEY);
+    if(raw){ const a = raw.split("\n").map(s => s.trim()).filter(Boolean); if(a.length) return a; }
+  }catch{}
+  return DEFAULT_MODELS.slice();
+}
+
 /* ---- состояние ---- */
 const state = {
   rootHandle: null,
@@ -400,6 +477,7 @@ const state = {
   slots: [],         // отрисованные слоты текущего блока
   transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
+  requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
 };
 
 /* ---- ссылки на DOM ---- */
@@ -407,7 +485,12 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), counts: $("counts"),
+  addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
+  modelsList: $("modelsList"),
+  settingsModal: $("settingsModal"), setKey: $("setKey"), setPrompt: $("setPrompt"),
+  setModels: $("setModels"), setSave: $("setSave"), setCancel: $("setCancel"),
+  reqModal: $("reqModal"), reqTitle: $("reqTitle"), reqModel: $("reqModel"),
+  reqPrompt: $("reqPrompt"), reqStatus: $("reqStatus"), reqSend: $("reqSend"), reqCancel: $("reqCancel"),
   pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
   popLabelWrap: $("popLabelWrap"), popAdd: $("popAdd"), popCancel: $("popCancel"),
   filter: $("filter"), list: $("blockList"),
@@ -551,7 +634,7 @@ function normalizeSpec(s){
   if(s.role === "source" || s.role === "translation") return { role: s.role };
   if(s.role === "variant"){
     const label = sanitizeLabel(s.label || "");
-    return label ? { role: "variant", label } : null;
+    return label ? { role: "variant", label, model: typeof s.model === "string" ? s.model : "" } : null;
   }
   return null;
 }
@@ -756,7 +839,7 @@ function sectorAtCaret(blocks, caret){
 
 function buildSlotDOM(spec, i){
   const slot = {
-    role: spec.role, label: spec.label || "", index: i,
+    role: spec.role, label: spec.label || "", model: spec.model || "", index: i,
     editor: null, backdrop: null,
     fileHandle: null, fmLines: null, savedText: "", dot: null,
   };
@@ -773,6 +856,20 @@ function buildSlotDOM(spec, i){
     spec.role === "translation" ? "Перевод · RU" :
     "Вариант · " + spec.label;
   head.appendChild(label);
+
+  // у варианта — выбор модели и кнопка запроса к ней (API-режим)
+  if(spec.role === "variant"){
+    const model = document.createElement("input");
+    model.className = "model-input"; model.type = "text";
+    model.setAttribute("list", "modelsList");
+    model.placeholder = "модель"; model.value = spec.model || "";
+    model.dataset.action = "model-input";
+    head.appendChild(model);
+    const req = document.createElement("button");
+    req.className = "mini-btn"; req.dataset.action = "request";
+    req.textContent = "Запросить";
+    head.appendChild(req);
+  }
 
   // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
   // (у перевода они в шапке блока, рядом со статусом)
@@ -1147,6 +1244,120 @@ async function createBlock(label, title, sourceText){
   }catch(e){ console.error(e); toast("Не удалось создать блок: " + e.message, true); return false; }
 }
 
+/* ===================== API-режим (OpenRouter) ===================== */
+
+// текст оригинала текущего блока: из окна-оригинала (свежие правки) либо из файла
+async function currentOriginal(){
+  const src = state.slots.find(s => s.role === "source" && s.editor);
+  if(src) return src.editor.value;
+  const b = state.current;
+  if(b && b.srcHandle){ try{ return await readFile(b.srcHandle); }catch{} }
+  return "";
+}
+
+// вызов OpenRouter; мягкие сообщения об ошибках, ключ нигде не логируем
+async function callOpenRouter(key, model, prompt){
+  let res;
+  try{
+    res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }),
+    });
+  }catch(e){
+    if(location.protocol === "file:")
+      throw new Error("Запросы к моделям работают при открытии по ссылке (Netlify), а не из файла.");
+    throw new Error("Нет сети или сервис недоступен.");
+  }
+  if(!res.ok){
+    let msg = "Ошибка " + res.status;
+    try{ const j = await res.json(); if(j && j.error && j.error.message) msg = j.error.message; }catch{}
+    if(res.status === 401) msg = "Неверный ключ API.";
+    else if(res.status === 402) msg = "Недостаточно кредитов на OpenRouter.";
+    else if(res.status === 429) msg = "Превышен лимит запросов — попробуйте позже.";
+    else if(res.status === 404) msg = "Модель недоступна: " + model;
+    throw new Error(msg);
+  }
+  let j;
+  try{ j = await res.json(); }catch{ throw new Error("Некорректный ответ сервиса."); }
+  const content = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+  if(!content || !content.trim()) throw new Error("Пустой ответ модели.");
+  return content;
+}
+
+// открыть окно запроса для слота-варианта (с уже подставленным оригиналом)
+async function openRequest(slot){
+  const b = state.current;
+  if(!b || !slot || slot.role !== "variant") return;
+  state.requestSlot = slot;
+  els.reqTitle.textContent = slot.label;
+  els.reqModel.value = slot.model || (getModels()[0] || "");
+  const orig = await currentOriginal();
+  els.reqPrompt.value = getPrompt().split("{original}").join(orig);
+  els.reqStatus.textContent = ""; els.reqStatus.className = "req-status";
+  els.reqSend.disabled = false;
+  els.reqModal.hidden = false;
+  els.reqPrompt.focus();
+}
+function closeRequest(){ els.reqModal.hidden = true; state.requestSlot = null; }
+function reqError(msg){ els.reqStatus.className = "req-status error"; els.reqStatus.textContent = msg; }
+
+async function sendRequest(){
+  const slot = state.requestSlot;
+  if(!slot) return;
+  const key = getApiKey();
+  if(!key){ reqError("Укажите ключ API в настройках (кнопка «⚙ Настройки»)."); return; }
+  const model = els.reqModel.value.trim();
+  if(!model){ reqError("Укажите модель."); return; }
+  const prompt = els.reqPrompt.value;
+
+  els.reqSend.disabled = true;
+  els.reqStatus.className = "req-status loading";
+  els.reqStatus.textContent = "Запрос к модели…";
+  try{
+    const content = await callOpenRouter(key, model, prompt);
+    // запомнить выбранную модель на слоте/в раскладке
+    slot.model = model;
+    if(state.layout[slot.index] && state.layout[slot.index].role === "variant"){
+      state.layout[slot.index].model = model; saveLayout();
+    }
+    // подставить ответ в окно варианта — НЕ сохраняем автоматически
+    if(slot.editor){
+      slot.editor.value = content;
+      updateBackdrop(slot); updateDirtyUI(); syncActiveFromEditor(slot);
+    }
+    closeRequest();
+    toast("Ответ модели подставлен — проверьте и сохраните как вариант");
+  }catch(e){
+    reqError(e.message || String(e));
+  }finally{
+    els.reqSend.disabled = false;
+  }
+}
+
+/* ---- настройки ---- */
+function renderModelsDatalist(){
+  els.modelsList.innerHTML = getModels().map(m => `<option value="${esc(m)}"></option>`).join("");
+}
+function openSettings(){
+  els.setKey.value = getApiKey();
+  els.setPrompt.value = getPrompt();
+  els.setModels.value = getModels().join("\n");
+  els.settingsModal.hidden = false;
+}
+function closeSettings(){ els.settingsModal.hidden = true; }
+function saveSettings(){
+  try{
+    localStorage.setItem(API_KEY_KEY, els.setKey.value.trim());
+    localStorage.setItem(PROMPT_KEY, els.setPrompt.value);
+    const models = els.setModels.value.split("\n").map(s => s.trim()).filter(Boolean);
+    localStorage.setItem(MODELS_KEY, models.join("\n"));
+  }catch{ toast("Не удалось сохранить настройки в браузере", true); return; }
+  renderModelsDatalist();
+  closeSettings();
+  toast("Настройки сохранены");
+}
+
 async function setStatus(newStatus){
   const b = state.current, ts = state.transSlot;
   if(!b || !ts || !ts.fileHandle) return;
@@ -1284,6 +1495,17 @@ els.nbCreate.addEventListener("click", async () => {
   if(await createBlock(label, els.nbTitle.value.trim(), els.nbSource.value)) closeNewBlock();
 });
 
+// настройки
+els.settingsBtn.addEventListener("click", openSettings);
+els.setCancel.addEventListener("click", closeSettings);
+els.setSave.addEventListener("click", saveSettings);
+els.settingsModal.addEventListener("click", (e) => { if(e.target === els.settingsModal) closeSettings(); });
+
+// окно API-запроса
+els.reqCancel.addEventListener("click", closeRequest);
+els.reqSend.addEventListener("click", sendRequest);
+els.reqModal.addEventListener("click", (e) => { if(e.target === els.reqModal) closeRequest(); });
+
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
   const tool = e.target.closest("[data-tool]");
@@ -1306,7 +1528,22 @@ els.panes.addEventListener("click", (e) => {
     saveSource(state.slots[parseInt(ss.closest(".pane").dataset.index, 10)]);
     return;
   }
+  const rq = e.target.closest("[data-action='request']");
+  if(rq){
+    openRequest(state.slots[parseInt(rq.closest(".pane").dataset.index, 10)]);
+    return;
+  }
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
+});
+
+// выбор модели в слоте-варианте — пишем в раскладку (localStorage)
+els.panes.addEventListener("change", (e) => {
+  const mi = e.target.closest("[data-action='model-input']");
+  if(!mi) return;
+  const idx = parseInt(mi.closest(".pane").dataset.index, 10);
+  const slot = state.slots[idx], spec = state.layout[idx];
+  if(slot) slot.model = mi.value.trim();
+  if(spec && spec.role === "variant"){ spec.model = mi.value.trim(); saveLayout(); }
 });
 
 // попап добавления окна
@@ -1323,7 +1560,7 @@ els.popAdd.addEventListener("click", () => {
   if(role === "variant"){
     const label = sanitizeLabel(els.popLabel.value);
     if(!label){ toast("Введите ярлык варианта (например, gemini)", true); return; }
-    spec = { role: "variant", label };
+    spec = { role: "variant", label, model: "" };
   } else {
     spec = { role };
   }
@@ -1334,13 +1571,18 @@ document.addEventListener("click", (e) => {
   if(!els.pop.hidden && !els.pop.contains(e.target) && e.target !== els.addSlotBtn) closePop();
 });
 
+function anyModalOpen(){ return !els.modal.hidden || !els.settingsModal.hidden || !els.reqModal.hidden; }
+
 document.addEventListener("keydown", (e) => {
   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
-    e.preventDefault(); saveFocused();
+    e.preventDefault();
+    if(!anyModalOpen()) saveFocused();   // в модалках Ctrl+S не трогает файлы
   }
   if(e.key === "Escape"){
     if(!els.pop.hidden) closePop();
     if(!els.modal.hidden) closeNewBlock();
+    if(!els.settingsModal.hidden) closeSettings();
+    if(!els.reqModal.hidden) closeRequest();
   }
 });
 
@@ -1363,6 +1605,7 @@ window.addEventListener("beforeunload", (e) => {
   }
   state.layout = loadLayout();
   applySidePrefs();
+  renderModelsDatalist();
   try{
     const saved = await IDB.get("root");
     if(saved){
