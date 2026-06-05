@@ -200,22 +200,7 @@
     padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px;
   }
 
-  /* оригинал (RTL, только чтение) */
-  .source-view{
-    flex:1 1 auto; overflow:auto; padding:18px 22px;
-    font-family:var(--ar); font-size:1.45rem; line-height:2.05; color:var(--ink);
-  }
-  .src-line{ margin:0; }
-  .src-blank{ height:.7em; }
-  .source-view .sec{ white-space:pre-wrap; cursor:pointer; border-radius:5px; padding:0 4px; margin:0 -4px; }
-  .source-view .sec.active{ background:rgba(107,79,43,.12); }
-  .src-head{ font-weight:600; color:var(--ink); line-height:1.4; margin:.15em 0; }
-  .src-head.h1{ font-size:1.95rem; }
-  .src-head.h2{ font-size:1.62rem; }
-  .src-head.h3{ font-size:1.36rem; }
-  .src-comment{ font-size:.72rem; line-height:1.4; color:var(--ink-faint); font-family:var(--ui); direction:ltr; text-align:left; }
-
-  /* редактируемое поле с подсветкой (перевод / вариант) */
+  /* редактируемое поле с подсветкой (оригинал / перевод / вариант) */
   .editor-wrap{
     flex:1 1 auto; position:relative; margin:0; min-height:0;
   }
@@ -234,6 +219,13 @@
   .backdrop .bd-head{ background:rgba(107,79,43,.10); box-shadow:inset 3px 0 0 0 var(--accent); border-radius:2px; }
   .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
   .editor::placeholder{ color:var(--ink-faint); }
+  /* оригинал — арабский шрифт и RTL (поле и подложка одинаковые метрики) */
+  .pane[data-role="source"] .editor, .pane[data-role="source"] .backdrop{
+    font-family:var(--ar); font-size:1.3rem; line-height:1.95;
+  }
+  .pane[data-role="source"] .backdrop .bd-head{ box-shadow:inset -3px 0 0 0 var(--accent); }
+  /* бледная служебная строка <!-- ... --> в подложке (текст виден в поле) */
+  .backdrop .bd-comment{ background:rgba(0,0,0,.05); border-radius:2px; }
 
   /* тост / предупреждение */
   .toast{
@@ -691,24 +683,11 @@ function sectorAtCaret(blocks, caret){
   return best;
 }
 
-function renderSourceHTML(text){
-  return parseBlocks(text).map(b => {
-    if(b.type === "blank")   return `<div class="src-blank"></div>`;
-    if(b.type === "comment") return `<div class="src-comment">${esc(b.text)}</div>`;
-    if(b.kind === "heading"){
-      const lv = Math.min(b.level, 3);
-      return `<div class="sec src-head h${lv}" data-idx="${b.idx}">${esc(b.text)}</div>`;
-    }
-    return `<div class="sec src-para" data-idx="${b.idx}">${esc(text.slice(b.start, b.end))}</div>`;
-  }).join("");
-}
-
 function buildSlotDOM(spec, i){
   const slot = {
     role: spec.role, label: spec.label || "", index: i,
-    editor: null, backdrop: null, sourceView: null,
+    editor: null, backdrop: null,
     fileHandle: null, fmLines: null, savedText: "", dot: null,
-    sourceText: "", hadFile: false,
   };
   const pane = document.createElement("div");
   pane.className = "pane"; pane.dataset.index = i; pane.dataset.role = spec.role;
@@ -724,10 +703,13 @@ function buildSlotDOM(spec, i){
     "Вариант · " + spec.label;
   head.appendChild(label);
 
-  if(spec.role === "variant"){
+  // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
+  // (у перевода они в шапке блока, рядом со статусом)
+  if(spec.role === "variant" || spec.role === "source"){
     const save = document.createElement("button");
-    save.className = "mini-btn"; save.dataset.action = "save-variant";
-    save.textContent = "Сохранить как вариант";
+    save.className = "mini-btn";
+    save.dataset.action = spec.role === "source" ? "save-source" : "save-variant";
+    save.textContent = spec.role === "source" ? "Сохранить оригинал" : "Сохранить как вариант";
     head.appendChild(save);
     const dot = document.createElement("span");
     dot.className = "dirty"; dot.textContent = "●";
@@ -750,14 +732,17 @@ function buildSlotDOM(spec, i){
   return slot;
 }
 
-// создать редактируемое поле (перевод / вариант) с подсветкой ==?...==
+// создать редактируемое поле (оригинал / перевод / вариант) с подсветкой
+// секторов, заголовков и маркеров ==?...==
 function makeEditor(slot, value){
   slot.body.innerHTML = "";
+  const isSrc = slot.role === "source";
   const wrap = document.createElement("div"); wrap.className = "editor-wrap";
   const bd = document.createElement("div"); bd.className = "backdrop"; bd.setAttribute("aria-hidden","true");
+  bd.dir = isSrc ? "rtl" : "ltr";
   const ta = document.createElement("textarea");
-  ta.className = "editor"; ta.dir = "ltr"; ta.spellcheck = true;
-  ta.placeholder = slot.role === "variant" ? "Вставьте вариант перевода…" : "Перевод…";
+  ta.className = "editor"; ta.dir = isSrc ? "rtl" : "ltr"; ta.spellcheck = true;
+  ta.placeholder = isSrc ? "Оригинал…" : slot.role === "variant" ? "Вставьте вариант перевода…" : "Перевод…";
   ta.value = value || "";
   wrap.appendChild(bd); wrap.appendChild(ta); slot.body.appendChild(wrap);
   slot.editor = ta; slot.backdrop = bd;
@@ -769,17 +754,6 @@ function makeEditor(slot, value){
   ta.addEventListener("focus", sync);
   ta.addEventListener("scroll", () => { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; });
   updateBackdrop(slot);
-}
-
-function makeSource(slot, text, hasFile){
-  slot.body.innerHTML = "";
-  const view = document.createElement("div");
-  view.className = "source-view"; view.dir = "rtl";
-  view.innerHTML = hasFile
-    ? renderSourceHTML(text)
-    : `<div class="src-comment">— нет файла оригинала для диапазона ${esc(state.current.range)} —</div>`;
-  slot.body.appendChild(view);
-  slot.sourceView = view;
 }
 
 function makeStart(slot){
@@ -805,7 +779,9 @@ function updateBackdrop(slot){
   for(const b of blocks){
     if(b.start > cursor) html += markHTML(text.slice(cursor, b.start));   // межблочные \n
     let inner = markHTML(text.slice(b.start, b.end));
-    if(b.type === "sector" && b.kind === "heading")
+    if(b.type === "comment")
+      inner = `<span class="bd-comment">${inner}</span>`;          // бледная служебная строка
+    else if(b.type === "sector" && b.kind === "heading")
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
     if(b.type === "sector" && b.idx === state.activeSector)
       inner = `<span class="sec-active">${inner}</span>`;
@@ -820,21 +796,10 @@ function updateBackdrop(slot){
 }
 
 /* ---- синхронная подсветка активного сектора во всех слотах ---- */
-function highlightSourceSector(slot){
-  if(!slot.sourceView) return;
-  for(const el of slot.sourceView.querySelectorAll(".sec.active")) el.classList.remove("active");
-  if(state.activeSector != null){
-    const el = slot.sourceView.querySelector(`.sec[data-idx="${state.activeSector}"]`);
-    if(el) el.classList.add("active");
-  }
-}
 function setActiveSector(idx){
   if(idx === state.activeSector) return;
   state.activeSector = idx;
-  for(const s of state.slots){
-    if(s.role === "source") highlightSourceSector(s);
-    else if(s.editor) updateBackdrop(s);
-  }
+  for(const s of state.slots) if(s.editor) updateBackdrop(s);
 }
 function syncActiveFromEditor(slot){
   if(!slot.editor) return;
@@ -845,10 +810,10 @@ function syncActiveFromEditor(slot){
 // загрузить содержимое слота с диска (свежим)
 async function loadSlotFromDisk(slot, b){
   if(slot.role === "source"){
-    let text = "", has = !!b.srcHandle;
-    if(has){ try{ text = await readFile(b.srcHandle); }catch{ text = ""; has = false; } }
-    slot.fileHandle = b.srcHandle || null; slot.hadFile = has; slot.sourceText = text;
-    makeSource(slot, text, has);
+    let text = "";
+    if(b.srcHandle){ try{ text = await readFile(b.srcHandle); }catch{ text = ""; } }
+    slot.fileHandle = b.srcHandle || null; slot.savedText = text;
+    makeEditor(slot, text);
   } else if(slot.role === "translation"){
     if(b.trHandle){
       let body = "", fmLines = ["status: todo", "pages: " + b.range, "glossary_checked: false"];
@@ -880,8 +845,8 @@ async function loadSlotFromDisk(slot, b){
 // чтобы не потерять несохранённые правки
 function restoreSlot(slot, old){
   if(slot.role === "source"){
-    slot.fileHandle = old.fileHandle; slot.hadFile = old.hadFile; slot.sourceText = old.sourceText;
-    makeSource(slot, old.sourceText || "", !!old.hadFile);
+    slot.fileHandle = old.fileHandle; slot.savedText = old.savedText;
+    makeEditor(slot, old.curValue != null ? old.curValue : old.savedText);
   } else if(slot.role === "translation"){
     if(old.fileHandle){
       slot.fileHandle = old.fileHandle; slot.fmLines = old.fmLines; slot.savedText = old.savedText;
@@ -933,8 +898,6 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   els.saveBtn.hidden = !hasFile;
   renderStatusBar(hasFile ? b.status : null);
   updateDirtyUI();
-
-  for(const s of slots) if(s.role === "source") highlightSourceSector(s);
 }
 
 function renderStatusBar(status){
@@ -945,7 +908,7 @@ function renderStatusBar(status){
 /* ===================== изменения и сохранение ===================== */
 
 function slotDirty(s){
-  return !!s.editor && (s.role === "translation" || s.role === "variant") && s.editor.value !== s.savedText;
+  return !!s.editor && s.editor.value !== s.savedText;
 }
 function anyDirty(){ return state.slots.some(slotDirty); }
 function updateDirtyUI(){
@@ -982,6 +945,22 @@ async function saveVariant(slot){
     slot.savedText = slot.editor.value; updateDirtyUI();
     toast("Вариант сохранён: " + slot.label);
   }catch(e){ console.error(e); toast("Ошибка записи варианта: " + e.message, true); }
+}
+
+async function saveSource(slot){
+  const b = state.current;
+  if(!b || !slot) return;
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  try{
+    let h = slot.fileHandle;
+    if(!h){
+      h = await state.dirs.source.getFileHandle(`${b.range}.md`, { create: true });
+      slot.fileHandle = h; b.srcHandle = h;
+    }
+    await writeFile(h, slot.editor.value);   // оригинал без фронтматтера — тело как есть
+    slot.savedText = slot.editor.value; updateDirtyUI();
+    toast("Оригинал сохранён");
+  }catch(e){ console.error(e); toast("Ошибка записи оригинала: " + e.message, true); }
 }
 
 async function startTranslation(){
@@ -1037,7 +1016,12 @@ async function setStatus(newStatus){
 function saveFocused(){
   const ae = document.activeElement;
   const s = state.slots.find(x => x.editor === ae);
-  if(s){ if(s.role === "translation") saveTranslation(s); else saveVariant(s); return; }
+  if(s){
+    if(s.role === "translation") saveTranslation(s);
+    else if(s.role === "source") saveSource(s);
+    else saveVariant(s);
+    return;
+  }
   if(state.transSlot && state.transSlot.fileHandle) saveTranslation();
 }
 
@@ -1119,9 +1103,6 @@ els.statusBar.addEventListener("click", (e) => {
 
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
-  const sec = e.target.closest(".source-view .sec");
-  if(sec){ setActiveSector(parseInt(sec.dataset.idx, 10)); return; }
-
   const tool = e.target.closest("[data-tool]");
   if(tool){
     const pane = tool.closest(".pane");
@@ -1134,8 +1115,12 @@ els.panes.addEventListener("click", (e) => {
   }
   const sv = e.target.closest("[data-action='save-variant']");
   if(sv){
-    const pane = sv.closest(".pane");
-    saveVariant(state.slots[parseInt(pane.dataset.index, 10)]);
+    saveVariant(state.slots[parseInt(sv.closest(".pane").dataset.index, 10)]);
+    return;
+  }
+  const ss = e.target.closest("[data-action='save-source']");
+  if(ss){
+    saveSource(state.slots[parseInt(ss.closest(".pane").dataset.index, 10)]);
     return;
   }
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
