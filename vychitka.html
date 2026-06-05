@@ -178,6 +178,27 @@
   .req-status.loading{ color:var(--st-review); }
   .req-status.error{ color:#9a2b1c; }
 
+  /* баннер идущего запроса прямо в окне-варианте */
+  .req-banner{
+    flex:0 0 auto; display:flex; align-items:center; gap:8px;
+    padding:6px 12px; background:#eaf1f7; border-bottom:1px solid var(--line-soft);
+    font-size:12px; color:var(--st-review);
+  }
+  .req-banner .spinner{
+    width:13px; height:13px; flex:0 0 auto;
+    border:2px solid #b9cfe0; border-top-color:var(--st-review);
+    border-radius:50%; animation:spin .8s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .req-banner .req-model{ font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .req-banner .req-elapsed{ color:var(--ink-soft); font-variant-numeric:tabular-nums; }
+  .req-banner .spacer{ flex:1 1 auto; }
+  .req-banner .cancel-req{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:6px; cursor:pointer; font-size:12px; padding:2px 8px;
+  }
+  .req-banner .cancel-req:hover{ border-color:#9a2b1c; color:#9a2b1c; }
+
   /* выбор модели в окне-варианте */
   .model-input{
     font-family:inherit; font-size:12px; color:var(--ink); background:#fff;
@@ -479,8 +500,9 @@ const state = {
   transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
-  pending: new Set(),// идущие фоновые API-запросы: ключ = метка-блока \0 ярлык
+  pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
 };
+let reqTicker = null;     // интервал обновления счётчиков времени в баннерах
 
 /* ---- ссылки на DOM ---- */
 const $ = (id) => document.getElementById(id);
@@ -872,10 +894,6 @@ function buildSlotDOM(spec, i){
     req.textContent = "Запросить";
     head.appendChild(req);
     slot.reqBtn = req;
-    // если для этого блока+ярлыка уже идёт фоновый запрос — отразить
-    if(state.current && state.pending.has(reqKey(state.current.label, spec.label))){
-      req.disabled = true; req.textContent = "Запрос…";
-    }
   }
 
   // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
@@ -1073,6 +1091,9 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   els.saveBtn.hidden = !hasFile;
   renderStatusBar(hasFile ? b.status : null);
   updateDirtyUI();
+
+  // восстановить индикатор идущего запроса (баннер/кнопка) после перерисовки
+  for(const s of slots) if(s.role === "variant") reflectSlotRequest(s);
 }
 
 function renderStatusBar(status){
@@ -1263,15 +1284,17 @@ async function currentOriginal(){
 }
 
 // вызов OpenRouter; мягкие сообщения об ошибках, ключ нигде не логируем
-async function callOpenRouter(key, model, prompt){
+async function callOpenRouter(key, model, prompt, signal){
   let res;
   try{
     res = await fetch(OPENROUTER_URL, {
       method: "POST",
       headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
       body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }] }),
+      signal,
     });
   }catch(e){
+    if(e && e.name === "AbortError") throw e;          // отмена пользователем
     if(location.protocol === "file:")
       throw new Error("Запросы к моделям работают при открытии по ссылке (Netlify), а не из файла.");
     throw new Error("Нет сети или сервис недоступен.");
@@ -1312,11 +1335,49 @@ function reqError(msg){ els.reqStatus.className = "req-status error"; els.reqSta
 // ключ фонового запроса = блок + ярлык варианта
 function reqKey(blockLabel, variantLabel){ return blockLabel + " " + variantLabel; }
 
-// индикатор «Запрос…» на кнопке варианта (если он сейчас виден)
-function setReqIndicator(blockLabel, variantLabel, on){
+function elapsedStr(ts){
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  return s < 60 ? `${s} с` : `${Math.floor(s/60)} мин ${String(s%60).padStart(2,"0")} с`;
+}
+
+// тикер: раз в секунду обновляет счётчики времени во всех видимых баннерах
+function startTicker(){ if(!reqTicker) reqTicker = setInterval(updateReqBanners, 1000); }
+function stopTicker(){ if(reqTicker && state.pending.size === 0){ clearInterval(reqTicker); reqTicker = null; } }
+function updateReqBanners(){
+  if(!state.current) return;
+  for(const s of state.slots){
+    if(s.role !== "variant" || !s.reqBanner) continue;
+    const info = state.pending.get(reqKey(state.current.label, s.label));
+    const el = info && s.reqBanner.querySelector(".req-elapsed");
+    if(el) el.textContent = elapsedStr(info.startedAt);
+  }
+}
+
+// показать/обновить состояние запроса в слоте-варианте (кнопка + баннер со спиннером,
+// названием модели, счётчиком времени и кнопкой «Отменить»)
+function reflectSlotRequest(slot){
+  if(!slot || slot.role !== "variant") return;
+  const info = state.current ? state.pending.get(reqKey(state.current.label, slot.label)) : null;
+  if(slot.reqBtn){ slot.reqBtn.disabled = !!info; slot.reqBtn.textContent = info ? "Запрос…" : "Запросить"; }
+  if(slot.reqBanner){ slot.reqBanner.remove(); slot.reqBanner = null; }
+  if(info && slot.body){
+    const bn = document.createElement("div");
+    bn.className = "req-banner";
+    bn.innerHTML =
+      `<span class="spinner"></span>` +
+      `<span>Запрос к</span> <span class="req-model">${esc(info.model)}</span> ` +
+      `<span class="req-elapsed">${esc(elapsedStr(info.startedAt))}</span>` +
+      `<span class="spacer"></span>` +
+      `<button class="cancel-req" data-action="cancel-request">Отменить</button>`;
+    slot.body.insertBefore(bn, slot.body.firstChild);
+    slot.reqBanner = bn;
+  }
+}
+// обновить отображение для блока+ярлыка, если он сейчас виден
+function reflectRequestFor(blockLabel, variantLabel){
   if(!state.current || state.current.label !== blockLabel) return;
   const slot = state.slots.find(s => s.role === "variant" && s.label === variantLabel);
-  if(slot && slot.reqBtn){ slot.reqBtn.disabled = on; slot.reqBtn.textContent = on ? "Запрос…" : "Запросить"; }
+  if(slot) reflectSlotRequest(slot);
 }
 
 // подставить ответ в окно варианта, если оно всё ещё показано для того же блока
@@ -1353,20 +1414,32 @@ function sendRequest(){
     state.layout[slot.index].model = model; saveLayout();
   }
 
-  state.pending.add(k);
+  const controller = new AbortController();
+  state.pending.set(k, { model, startedAt: Date.now(), controller });
   closeRequest();
-  setReqIndicator(blockLabel, variantLabel, true);
+  reflectRequestFor(blockLabel, variantLabel);
+  startTicker();
   toast("Запрос отправлен — можно продолжать работу");
 
-  callOpenRouter(key, model, prompt).then(content => {
+  callOpenRouter(key, model, prompt, controller.signal).then(content => {
     state.pending.delete(k);
-    setReqIndicator(blockLabel, variantLabel, false);
+    reflectRequestFor(blockLabel, variantLabel);
+    stopTicker();
     applyResponse(blockLabel, variantLabel, content);
   }).catch(err => {
     state.pending.delete(k);
-    setReqIndicator(blockLabel, variantLabel, false);
-    toast("Запрос («" + variantLabel + "»): " + (err && err.message || err), true);
+    reflectRequestFor(blockLabel, variantLabel);
+    stopTicker();
+    if(err && err.name === "AbortError") toast("Запрос отменён: «" + variantLabel + "»");
+    else toast("Запрос («" + variantLabel + "»): " + (err && err.message || err), true);
   });
+}
+
+// отменить идущий запрос для слота-варианта
+function cancelRequest(slot){
+  if(!slot || !state.current) return;
+  const info = state.pending.get(reqKey(state.current.label, slot.label));
+  if(info && info.controller) info.controller.abort();
 }
 
 /* ---- настройки ---- */
@@ -1565,6 +1638,11 @@ els.panes.addEventListener("click", (e) => {
   const rq = e.target.closest("[data-action='request']");
   if(rq){
     openRequest(state.slots[parseInt(rq.closest(".pane").dataset.index, 10)]);
+    return;
+  }
+  const cr = e.target.closest("[data-action='cancel-request']");
+  if(cr){
+    cancelRequest(state.slots[parseInt(cr.closest(".pane").dataset.index, 10)]);
     return;
   }
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
