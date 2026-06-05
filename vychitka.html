@@ -199,12 +199,53 @@
   }
   .req-banner .cancel-req:hover{ border-color:#9a2b1c; color:#9a2b1c; }
 
-  /* выбор модели в окне-варианте */
+  /* выбор модели и команды в окне-варианте */
   .model-input{
     font-family:inherit; font-size:12px; color:var(--ink); background:#fff;
-    border:1px solid var(--line); border-radius:6px; padding:2px 7px; width:150px;
+    border:1px solid var(--line); border-radius:6px; padding:2px 7px; width:140px;
   }
   .model-input:focus{ outline:none; border-color:var(--accent); }
+  .cmd-select{
+    font-family:inherit; font-size:12px; color:var(--ink); background:#fff;
+    border:1px solid var(--line); border-radius:6px; padding:2px 6px; max-width:150px;
+  }
+  .cmd-select:focus{ outline:none; border-color:var(--accent); }
+  .cmd-hint{ font-size:11px; color:var(--ink-faint); }
+
+  /* редактор команд в настройках */
+  .cmds-wrap{ display:flex; flex-direction:column; gap:8px; }
+  .cmds-head{ display:flex; flex-direction:column; gap:2px; font-size:13px; color:var(--ink-soft); }
+  .cmd-list{ display:flex; flex-direction:column; gap:10px; }
+  .cmd-card{
+    border:1px solid var(--line); border-radius:9px; padding:10px; background:#fff;
+    display:flex; flex-direction:column; gap:7px;
+  }
+  .cmd-row{ display:flex; gap:8px; align-items:center; }
+  .cmd-row .cmd-name{ flex:1 1 auto; }
+  .cmd-card input, .cmd-card select, .cmd-card textarea{
+    font-family:inherit; font-size:13px; color:var(--ink); background:#fff;
+    border:1px solid var(--line); border-radius:6px; padding:5px 8px;
+  }
+  .cmd-card textarea{ resize:vertical; min-height:56px; }
+  .cmd-card input:focus, .cmd-card select:focus, .cmd-card textarea:focus{ outline:none; border-color:var(--accent); }
+  .cmd-del{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:6px; cursor:pointer; font-size:12px; padding:4px 9px; flex:0 0 auto;
+  }
+  .cmd-del:hover{ border-color:#9a2b1c; color:#9a2b1c; }
+
+  /* свёрнутый слот = вертикальный корешок на своём месте в ряду */
+  .pane.collapsed{ flex:0 0 auto; width:34px; cursor:pointer; background:var(--panel); }
+  .pane.collapsed .pane-head, .pane.collapsed .pane-body{ display:none; }
+  .pane:not(.collapsed) .spine{ display:none; }
+  .spine{
+    flex:1 1 auto; display:flex; align-items:center; justify-content:center; gap:8px;
+    writing-mode:vertical-rl; text-orientation:mixed;
+    padding:10px 0; color:var(--ink-soft); font-size:12px; letter-spacing:.04em;
+    cursor:pointer; user-select:none;
+  }
+  .spine:hover{ background:var(--sel); }
+  .spine .spine-name{ font-weight:600; color:var(--ink); white-space:nowrap; }
 
   /* сегментный переключатель статуса */
   .statusbar{ display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -327,7 +368,7 @@
   <span class="root-name" id="rootName"></span>
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
-  <button id="newBlockBtn" class="btn" title="Создать новый блок из вставленного текста" hidden>Новый блок</button>
+  <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
 
@@ -385,7 +426,7 @@
 
 <div class="modal" id="newBlockModal" hidden>
   <div class="modal-box">
-    <h3>Новый блок</h3>
+    <h3>Новый раздел</h3>
     <label>Оригинал — вставьте текст
       <textarea id="nbSource" rows="9" placeholder="Вставьте сюда арабский оригинал…"></textarea>
     </label>
@@ -412,14 +453,18 @@
       <span class="hint">хранится только в вашем браузере; в репозиторий не попадает</span>
       <input id="setKey" type="password" autocomplete="off" placeholder="sk-or-…">
     </label>
-    <label>Шаблон запроса
-      <span class="hint">`{original}` заменяется текстом оригинала текущего блока</span>
-      <textarea id="setPrompt" rows="4"></textarea>
-    </label>
     <label>Модели (по одной в строке)
       <span class="hint">точные id — на openrouter.ai/models; можно вписать свою строку прямо в слоте</span>
-      <textarea id="setModels" rows="5"></textarea>
+      <textarea id="setModels" rows="3"></textarea>
     </label>
+    <div class="cmds-wrap">
+      <div class="cmds-head">
+        <span>Команды запроса</span>
+        <span class="hint">{text} — выбранный текст; для «оригинал + перевод» — {original} и {translation}</span>
+      </div>
+      <div id="cmdList" class="cmd-list"></div>
+      <button id="cmdAdd" class="btn-mini" type="button">＋ Добавить команду</button>
+    </div>
     <div class="modal-actions">
       <button id="setCancel" class="btn">Отмена</button>
       <button id="setSave" class="btn primary">Сохранить</button>
@@ -465,11 +510,10 @@ const SIDE_W_KEY = "vychitka-side-w";
 const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 
 /* ---- API-режим (OpenRouter) ---- */
-const API_KEY_KEY = "vychitka-api-key";
-const PROMPT_KEY  = "vychitka-prompt-template";
-const MODELS_KEY  = "vychitka-models";
+const API_KEY_KEY  = "vychitka-api-key";
+const MODELS_KEY   = "vychitka-models";
+const COMMANDS_KEY = "vychitka-commands";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_PROMPT = "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{original}";
 // дефолты — лишь подсказки; точные id моделей пользователь берёт на openrouter.ai/models
 const DEFAULT_MODELS = [
   "openai/gpt-4o",
@@ -478,9 +522,28 @@ const DEFAULT_MODELS = [
   "deepseek/deepseek-chat",
 ];
 
+// scope команды = что слать модели; {text} для одиночных, {original}/{translation} для пары
+const SCOPES = [
+  { id: "orig-all",    label: "Оригинал целиком",            hint: "весь оригинал" },
+  { id: "orig-sector", label: "Оригинал — активный сектор",  hint: "сектор оригинала" },
+  { id: "trans-all",   label: "Перевод целиком",             hint: "весь перевод" },
+  { id: "trans-sector",label: "Перевод — активный сектор",   hint: "сектор перевода" },
+  { id: "orig-trans",  label: "Оригинал + перевод (целиком)",hint: "оригинал + перевод" },
+];
+function scopeLabel(id){ const s = SCOPES.find(x => x.id === id); return s ? s.label : id; }
+function scopeHint(id){ const s = SCOPES.find(x => x.id === id); return s ? s.hint : id; }
+
+// предустановленные команды-примеры (редактируемы и удаляемы в Настройках)
+const DEFAULT_COMMANDS = [
+  { name: "Перевести",          scope: "orig-all",    prompt: "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{text}" },
+  { name: "Тафсир аята",        scope: "orig-sector", prompt: "Дай краткий тафсир (толкование) следующего фрагмента:\n\n{text}" },
+  { name: "Разбор грамматики",  scope: "orig-sector", prompt: "Разбери грамматику (إعراب) следующего арабского фрагмента, по словам:\n\n{text}" },
+  { name: "Проверь мой перевод",scope: "orig-trans",  prompt: "Сверь перевод с оригиналом и укажи ошибки, неточности и пропуски.\n\nОригинал:\n{original}\n\nПеревод:\n{translation}" },
+  { name: "Сделай естественнее",scope: "trans-all",   prompt: "Перепиши следующий русский перевод, сделав его естественнее и глаже, не искажая смысл:\n\n{text}" },
+];
+
 // настройки — только в localStorage пользователя, никогда в файлы/логи
 function getApiKey(){ try{ return localStorage.getItem(API_KEY_KEY) || ""; }catch{ return ""; } }
-function getPrompt(){ try{ return localStorage.getItem(PROMPT_KEY) || DEFAULT_PROMPT; }catch{ return DEFAULT_PROMPT; } }
 function getModels(){
   try{
     const raw = localStorage.getItem(MODELS_KEY);
@@ -488,6 +551,21 @@ function getModels(){
   }catch{}
   return DEFAULT_MODELS.slice();
 }
+function getCommands(){
+  try{
+    const raw = localStorage.getItem(COMMANDS_KEY);
+    if(raw){
+      const a = JSON.parse(raw);
+      if(Array.isArray(a)){
+        const out = a.filter(c => c && typeof c.name === "string" && typeof c.prompt === "string" && SCOPES.some(s => s.id === c.scope));
+        if(out.length) return out.map(c => ({ name: c.name, scope: c.scope, prompt: c.prompt }));
+      }
+    }
+  }catch{}
+  return DEFAULT_COMMANDS.map(c => ({ ...c }));
+}
+function setCommands(arr){ try{ localStorage.setItem(COMMANDS_KEY, JSON.stringify(arr)); }catch{} }
+function commandByName(name){ const cs = getCommands(); return cs.find(c => c.name === name) || cs[0] || DEFAULT_COMMANDS[0]; }
 
 /* ---- состояние ---- */
 const state = {
@@ -501,6 +579,7 @@ const state = {
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
   pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
+  editCommands: [],  // рабочая копия команд в открытом окне настроек
 };
 let reqTicker = null;     // интервал обновления счётчиков времени в баннерах
 
@@ -511,8 +590,9 @@ const els = {
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
   modelsList: $("modelsList"),
-  settingsModal: $("settingsModal"), setKey: $("setKey"), setPrompt: $("setPrompt"),
-  setModels: $("setModels"), setSave: $("setSave"), setCancel: $("setCancel"),
+  settingsModal: $("settingsModal"), setKey: $("setKey"),
+  setModels: $("setModels"), cmdList: $("cmdList"), cmdAdd: $("cmdAdd"),
+  setSave: $("setSave"), setCancel: $("setCancel"),
   reqModal: $("reqModal"), reqTitle: $("reqTitle"), reqModel: $("reqModel"),
   reqPrompt: $("reqPrompt"), reqStatus: $("reqStatus"), reqSend: $("reqSend"), reqCancel: $("reqCancel"),
   pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
@@ -655,10 +735,17 @@ const IDB = (() => {
 
 function normalizeSpec(s){
   if(!s || typeof s !== "object") return null;
-  if(s.role === "source" || s.role === "translation") return { role: s.role };
+  const collapsed = !!s.collapsed;
+  if(s.role === "source" || s.role === "translation") return { role: s.role, collapsed };
   if(s.role === "variant"){
     const label = sanitizeLabel(s.label || "");
-    return label ? { role: "variant", label, model: typeof s.model === "string" ? s.model : "" } : null;
+    if(!label) return null;
+    return {
+      role: "variant", label,
+      model: typeof s.model === "string" ? s.model : "",
+      command: typeof s.command === "string" ? s.command : "",
+      collapsed,
+    };
   }
   return null;
 }
@@ -863,16 +950,22 @@ function sectorAtCaret(blocks, caret){
 
 function buildSlotDOM(spec, i){
   const slot = {
-    role: spec.role, label: spec.label || "", model: spec.model || "", index: i,
+    role: spec.role, label: spec.label || "", model: spec.model || "",
+    command: spec.command || "", index: i,
     editor: null, backdrop: null,
     fileHandle: null, fmLines: null, savedText: "", dot: null,
   };
   const pane = document.createElement("div");
-  pane.className = "pane"; pane.dataset.index = i; pane.dataset.role = spec.role;
+  pane.className = "pane" + (spec.collapsed ? " collapsed" : "");
+  pane.dataset.index = i; pane.dataset.role = spec.role;
 
   const head = document.createElement("div");
   head.className = "pane-head";
 
+  const spineName =
+    spec.role === "source" ? "Оригинал" :
+    spec.role === "translation" ? "Перевод" :
+    "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
   label.textContent =
@@ -881,8 +974,20 @@ function buildSlotDOM(spec, i){
     "Вариант · " + spec.label;
   head.appendChild(label);
 
-  // у варианта — выбор модели и кнопка запроса к ней (API-режим)
+  // у варианта — выбор команды, модели и кнопка запроса (API-режим)
   if(spec.role === "variant"){
+    const cmds = getCommands();
+    const cur = slot.command || (cmds[0] && cmds[0].name) || "";
+    slot.command = cur;
+    const sel = document.createElement("select");
+    sel.className = "cmd-select"; sel.dataset.action = "cmd-select"; sel.title = "Команда запроса";
+    sel.innerHTML = cmds.map(c => `<option value="${esc(c.name)}"${c.name === cur ? " selected" : ""}>${esc(c.name)}</option>`).join("");
+    head.appendChild(sel);
+    const hint = document.createElement("span");
+    hint.className = "cmd-hint"; slot.cmdHint = hint;
+    const cc = commandByName(cur); hint.textContent = "→ " + scopeHint(cc.scope);
+    head.appendChild(hint);
+
     const model = document.createElement("input");
     model.className = "model-input"; model.type = "text";
     model.setAttribute("list", "modelsList");
@@ -912,6 +1017,7 @@ function buildSlotDOM(spec, i){
   const tools = document.createElement("span");
   tools.className = "pane-tools";
   tools.innerHTML =
+    `<button data-tool="collapse" title="Свернуть в корешок">⟨</button>` +
     `<button data-tool="left" title="Левее / выше">◂</button>` +
     `<button data-tool="right" title="Правее / ниже">▸</button>` +
     `<button data-tool="remove" title="Убрать окно">×</button>`;
@@ -920,7 +1026,12 @@ function buildSlotDOM(spec, i){
   const body = document.createElement("div");
   body.className = "pane-body";
 
-  pane.appendChild(head); pane.appendChild(body);
+  // корешок свёрнутого слота: вертикальная подпись, клик разворачивает
+  const spine = document.createElement("div");
+  spine.className = "spine"; spine.dataset.action = "expand"; spine.title = "Развернуть слот";
+  spine.innerHTML = `<span class="spine-name">${esc(spineName)}</span><span>развернуть ▸</span>`;
+
+  pane.appendChild(head); pane.appendChild(body); pane.appendChild(spine);
   slot.pane = pane; slot.head = head; slot.body = body;
   return slot;
 }
@@ -1282,6 +1393,44 @@ async function currentOriginal(){
   if(b && b.srcHandle){ try{ return await readFile(b.srcHandle); }catch{} }
   return "";
 }
+// текст перевода текущего блока (тело без фронтматтера): из окна-перевода либо из файла
+async function currentTranslation(){
+  const ts = state.transSlot;
+  if(ts && ts.editor) return ts.editor.value;
+  const b = state.current;
+  if(b && b.trHandle){
+    try{ const p = splitFrontmatter(await readFile(b.trHandle)); return p.body.replace(/^\n+/, "").replace(/\s+$/, ""); }catch{}
+  }
+  return "";
+}
+// текст активного сектора из заданного текста
+function sectorTextOf(full){
+  if(state.activeSector == null) return null;
+  const r = sectorRange(parseBlocks(full), state.activeSector);
+  return r ? full.slice(r[0], r[1]) : null;
+}
+// разрешить текст(ы) по scope команды; {error} — мягкое сообщение, запрос не уходит
+async function resolveCommand(cmd){
+  if(cmd.scope === "orig-all")  return { text: await currentOriginal() };
+  if(cmd.scope === "trans-all") return { text: await currentTranslation() };
+  if(cmd.scope === "orig-trans") return { original: await currentOriginal(), translation: await currentTranslation() };
+  if(cmd.scope === "orig-sector" || cmd.scope === "trans-sector"){
+    if(state.activeSector == null)
+      return { error: "Выделите сектор: поставьте курсор в нужный абзац — этой команде нужен активный сектор." };
+    const full = cmd.scope === "orig-sector" ? await currentOriginal() : await currentTranslation();
+    const t = sectorTextOf(full);
+    if(t == null) return { error: "В этом окне нет сектора с таким номером — выберите другой абзац." };
+    return { text: t };
+  }
+  return { text: "" };
+}
+function buildCommandPrompt(cmd, parts){
+  if(cmd.scope === "orig-trans")
+    return cmd.prompt.split("{original}").join(parts.original || "").split("{translation}").join(parts.translation || "");
+  return cmd.prompt.split("{text}").join(parts.text || "");
+}
+// команда, назначенная слоту (по имени), с откатом на первую/«Перевести»
+function currentCommandFor(slot){ return commandByName(slot.command || (getCommands()[0] && getCommands()[0].name)); }
 
 // вызов OpenRouter; мягкие сообщения об ошибках, ключ нигде не логируем
 async function callOpenRouter(key, model, prompt, signal){
@@ -1315,15 +1464,17 @@ async function callOpenRouter(key, model, prompt, signal){
   return content;
 }
 
-// открыть окно запроса для слота-варианта (с уже подставленным оригиналом)
+// открыть окно запроса для слота-варианта по его команде (текст уже подставлен)
 async function openRequest(slot){
   const b = state.current;
   if(!b || !slot || slot.role !== "variant") return;
+  const cmd = currentCommandFor(slot);
+  const resolved = await resolveCommand(cmd);
+  if(resolved.error){ toast(resolved.error, true); return; }   // напр. нет активного сектора
   state.requestSlot = slot;
-  els.reqTitle.textContent = slot.label;
+  els.reqTitle.textContent = slot.label + " · " + cmd.name;
   els.reqModel.value = slot.model || (getModels()[0] || "");
-  const orig = await currentOriginal();
-  els.reqPrompt.value = getPrompt().split("{original}").join(orig);
+  els.reqPrompt.value = buildCommandPrompt(cmd, resolved);
   els.reqStatus.textContent = ""; els.reqStatus.className = "req-status";
   els.reqSend.disabled = false;
   els.reqModal.hidden = false;
@@ -1446,21 +1597,45 @@ function cancelRequest(slot){
 function renderModelsDatalist(){
   els.modelsList.innerHTML = getModels().map(m => `<option value="${esc(m)}"></option>`).join("");
 }
+
+// редактор команд: рабочая копия в state.editCommands, синхронится с DOM на лету
+function renderCommandsEditor(){
+  els.cmdList.innerHTML = "";
+  state.editCommands.forEach((c, idx) => {
+    const card = document.createElement("div");
+    card.className = "cmd-card"; card.dataset.idx = idx;
+    const opts = SCOPES.map(s => `<option value="${s.id}"${s.id === c.scope ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+    card.innerHTML =
+      `<div class="cmd-row">` +
+        `<input class="cmd-name" data-field="name" placeholder="Имя команды" value="${esc(c.name)}">` +
+        `<select data-field="scope">${opts}</select>` +
+        `<button class="cmd-del" data-action="cmd-del" type="button">Удалить</button>` +
+      `</div>` +
+      `<textarea data-field="prompt" placeholder="Текст инструкции модели… ({text} или {original}/{translation})">${esc(c.prompt)}</textarea>`;
+    els.cmdList.appendChild(card);
+  });
+}
 function openSettings(){
   els.setKey.value = getApiKey();
-  els.setPrompt.value = getPrompt();
   els.setModels.value = getModels().join("\n");
+  state.editCommands = getCommands().map(c => ({ ...c }));
+  renderCommandsEditor();
   els.settingsModal.hidden = false;
 }
 function closeSettings(){ els.settingsModal.hidden = true; }
 function saveSettings(){
+  // отфильтровать пустые (без имени или промта)
+  const cmds = state.editCommands
+    .map(c => ({ name: (c.name || "").trim(), scope: c.scope, prompt: c.prompt }))
+    .filter(c => c.name && c.prompt && SCOPES.some(s => s.id === c.scope));
   try{
     localStorage.setItem(API_KEY_KEY, els.setKey.value.trim());
-    localStorage.setItem(PROMPT_KEY, els.setPrompt.value);
     const models = els.setModels.value.split("\n").map(s => s.trim()).filter(Boolean);
     localStorage.setItem(MODELS_KEY, models.join("\n"));
+    setCommands(cmds.length ? cmds : DEFAULT_COMMANDS);
   }catch{ toast("Не удалось сохранить настройки в браузере", true); return; }
   renderModelsDatalist();
+  if(state.current) renderSlots({ reload: false });   // обновить выпадашки команд в слотах
   closeSettings();
   toast("Настройки сохранены");
 }
@@ -1526,6 +1701,13 @@ function moveSlot(index, dir){
   const tmp = state.layout[index]; state.layout[index] = state.layout[j]; state.layout[j] = tmp;
   saveLayout();
   if(state.current) renderSlots({ reload: false });
+}
+// свернуть/развернуть слот: только класс на месте, без перерисовки (контент сохранён)
+function setCollapsed(index, val){
+  const spec = state.layout[index]; if(!spec) return;
+  spec.collapsed = val; saveLayout();
+  const slot = state.slots[index];
+  if(slot && slot.pane) slot.pane.classList.toggle("collapsed", val);
 }
 
 /* ---- попап добавления окна ---- */
@@ -1608,6 +1790,27 @@ els.setCancel.addEventListener("click", closeSettings);
 els.setSave.addEventListener("click", saveSettings);
 els.settingsModal.addEventListener("click", (e) => { if(e.target === els.settingsModal) closeSettings(); });
 
+// редактор команд: синхронизация полей с рабочей копией
+els.cmdAdd.addEventListener("click", () => {
+  state.editCommands.push({ name: "", scope: "orig-all", prompt: "" });
+  renderCommandsEditor();
+});
+function syncCmdField(e){
+  const field = e.target.dataset.field; if(!field) return;
+  const card = e.target.closest(".cmd-card"); if(!card) return;
+  const c = state.editCommands[parseInt(card.dataset.idx, 10)];
+  if(c) c[field] = e.target.value;
+}
+els.cmdList.addEventListener("input", syncCmdField);
+els.cmdList.addEventListener("change", syncCmdField);
+els.cmdList.addEventListener("click", (e) => {
+  const del = e.target.closest("[data-action='cmd-del']");
+  if(!del) return;
+  const card = del.closest(".cmd-card");
+  state.editCommands.splice(parseInt(card.dataset.idx, 10), 1);
+  renderCommandsEditor();
+});
+
 // окно API-запроса
 els.reqCancel.addEventListener("click", closeRequest);
 els.reqSend.addEventListener("click", sendRequest);
@@ -1623,8 +1826,11 @@ els.panes.addEventListener("click", (e) => {
     if(act === "left") moveSlot(idx, -1);
     else if(act === "right") moveSlot(idx, 1);
     else if(act === "remove") removeSlot(idx);
+    else if(act === "collapse") setCollapsed(idx, true);
     return;
   }
+  const sp = e.target.closest("[data-action='expand']");
+  if(sp){ setCollapsed(parseInt(sp.closest(".pane").dataset.index, 10), false); return; }
   const sv = e.target.closest("[data-action='save-variant']");
   if(sv){
     saveVariant(state.slots[parseInt(sv.closest(".pane").dataset.index, 10)]);
@@ -1648,8 +1854,19 @@ els.panes.addEventListener("click", (e) => {
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
 });
 
-// выбор модели в слоте-варианте — пишем в раскладку (localStorage)
+// выбор модели/команды в слоте-варианте — пишем в раскладку (localStorage)
 els.panes.addEventListener("change", (e) => {
+  const cs = e.target.closest("[data-action='cmd-select']");
+  if(cs){
+    const idx = parseInt(cs.closest(".pane").dataset.index, 10);
+    const slot = state.slots[idx], spec = state.layout[idx];
+    if(slot){
+      slot.command = cs.value;
+      if(slot.cmdHint) slot.cmdHint.textContent = "→ " + scopeHint(commandByName(cs.value).scope);
+    }
+    if(spec && spec.role === "variant"){ spec.command = cs.value; saveLayout(); }
+    return;
+  }
   const mi = e.target.closest("[data-action='model-input']");
   if(!mi) return;
   const idx = parseInt(mi.closest(".pane").dataset.index, 10);
@@ -1672,7 +1889,7 @@ els.popAdd.addEventListener("click", () => {
   if(role === "variant"){
     const label = sanitizeLabel(els.popLabel.value);
     if(!label){ toast("Введите ярлык варианта (например, gemini)", true); return; }
-    spec = { role: "variant", label, model: "" };
+    spec = { role: "variant", label, model: "", command: "" };
   } else {
     spec = { role };
   }
