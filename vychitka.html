@@ -139,9 +139,41 @@
     flex:0 0 auto; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
     padding:9px 16px; border-bottom:1px solid var(--line); background:var(--panel);
   }
-  .bh-title{ font-family:var(--ru); font-size:16px; }
-  .bh-title.empty{ color:var(--ink-faint); font-style:italic; }
-  .bh-pages{ font-size:12px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
+  .bh-title{
+    font-family:var(--ru); font-size:16px; color:var(--ink);
+    border:1px solid transparent; background:transparent; border-radius:6px;
+    padding:3px 7px; min-width:140px; max-width:42vw;
+  }
+  .bh-title:hover{ border-color:var(--line-soft); }
+  .bh-title:focus{ outline:none; border-color:var(--accent); background:#fff; }
+  .bh-title:disabled{ color:var(--ink-faint); }
+  .bh-label{ font-size:12px; color:var(--ink-faint); }
+  .btn-mini{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:6px; cursor:pointer; font-size:12px; padding:3px 9px;
+  }
+  .btn-mini:hover{ border-color:var(--accent); color:var(--ink); }
+
+  /* модалка «Новый блок» */
+  .modal{
+    position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+    background:rgba(30,26,20,.38); padding:20px;
+  }
+  .modal-box{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 12px 40px rgba(0,0,0,.25); padding:18px 20px; width:560px; max-width:100%;
+    max-height:90vh; overflow:auto; display:flex; flex-direction:column; gap:12px;
+  }
+  .modal-box h3{ margin:0; font-family:var(--ru); font-weight:600; }
+  .modal-box label{ display:flex; flex-direction:column; gap:5px; font-size:13px; color:var(--ink-soft); }
+  .modal-box .hint{ font-size:11px; color:var(--ink-faint); }
+  .modal-box textarea, .modal-box input{
+    font-family:inherit; font-size:13px; color:var(--ink); background:#fff;
+    border:1px solid var(--line); border-radius:7px; padding:8px 10px;
+  }
+  .modal-box textarea{ resize:vertical; min-height:120px; }
+  .modal-box textarea:focus, .modal-box input:focus{ outline:none; border-color:var(--accent); }
+  .modal-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
 
   /* сегментный переключатель статуса */
   .statusbar{ display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -252,7 +284,6 @@
     .panes{ flex-direction:column; flex:0 0 auto; }
     .pane{ flex:0 0 auto; }
     .pane .editor-wrap{ height:60vh; flex:0 0 auto; }
-    .pane .source-view{ height:60vh; flex:0 0 auto; }
   }
 </style>
 </head>
@@ -264,6 +295,7 @@
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <span class="spacer"></span>
+  <button id="newBlockBtn" class="btn" title="Создать новый блок из вставленного текста" hidden>Новый блок</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
 
@@ -297,8 +329,9 @@
 
   <section class="workspace">
     <div class="blockhead" id="blockHead" hidden>
-      <span class="bh-title" id="bhTitle"></span>
-      <span class="bh-pages" id="bhPages"></span>
+      <input class="bh-title" id="bhTitle" placeholder="Заголовок…" title="Заголовок блока (хранится в переводе)">
+      <span class="bh-label" id="bhLabel" title="Метка — имя файлов блока"></span>
+      <button class="btn-mini" id="renameBtn" title="Переименовать блок — сменить метку (имя файлов и порядок)">переименовать</button>
       <span class="spacer"></span>
       <div class="statusbar" id="statusBar">
         <button data-st="todo">todo</button>
@@ -318,16 +351,37 @@
   </section>
 </div>
 
+<div class="modal" id="newBlockModal" hidden>
+  <div class="modal-box">
+    <h3>Новый блок</h3>
+    <label>Оригинал — вставьте текст
+      <textarea id="nbSource" rows="9" placeholder="Вставьте сюда арабский оригинал…"></textarea>
+    </label>
+    <label>Метка
+      <span class="hint">короткое имя куска, например «Глава 1» или «390-393»</span>
+      <input id="nbLabel" type="text" placeholder="Глава 1">
+    </label>
+    <label>Заголовок
+      <input id="nbTitle" type="text" placeholder="Человекочитаемое название">
+    </label>
+    <div class="modal-actions">
+      <button id="nbCancel" class="btn">Отмена</button>
+      <button id="nbCreate" class="btn primary">Создать</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 "use strict";
 
 /* ===================================================================
-   Вычитка — фаза 1. Один файл, ваниль, File System Access API.
+   Вычитка. Один файл, ваниль, File System Access API.
    Слоты-окна: произвольная раскладка из source / translation / variant.
-   Раскладка хранится в localStorage пользователя (не в репозитории).
-   Спаривание файлов по ведущему диапазону страниц в имени файла.
+   Блок = метка (имя файлов). Заголовок — во фронтматтере перевода (title:).
+   Спаривание source↔translation по совпадению метки; вариант — по самому
+   длинному префиксу-метке имени файла.
    =================================================================== */
 
 const STATUSES = ["todo", "draft", "review", "verified"];
@@ -340,7 +394,7 @@ const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 const state = {
   rootHandle: null,
   dirs: { source: null, translation: null, variants: null },
-  blocks: [],        // [{range, sortKey, title, status, srcHandle, trHandle}]
+  blocks: [],        // [{label, title, status, srcHandle, trHandle}]
   current: null,     // активный блок
   layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
   slots: [],         // отрисованные слоты текущего блока
@@ -353,13 +407,15 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  addSlotBtn: $("addSlotBtn"), counts: $("counts"),
+  addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), counts: $("counts"),
   pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
   popLabelWrap: $("popLabelWrap"), popAdd: $("popAdd"), popCancel: $("popCancel"),
   filter: $("filter"), list: $("blockList"),
-  head: $("blockHead"), bhTitle: $("bhTitle"), bhPages: $("bhPages"),
+  head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"),
   statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
+  modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
+  nbTitle: $("nbTitle"), nbCreate: $("nbCreate"), nbCancel: $("nbCancel"),
 };
 
 /* ===================== утилиты ===================== */
@@ -377,22 +433,37 @@ function toast(msg, warn){
   toastTimer = setTimeout(() => els.toast.classList.remove("show"), warn ? 4200 : 1800);
 }
 
-// ведущий диапазон: "390-393.md" -> "390-393"; "390.md" -> "390"
-function rangeOf(name){
-  const m = name.match(/^(\d+(?:-\d+)?)/);
-  return m ? m[1] : null;
+// метка = имя файла без расширения: "390-393.md" -> "390-393"; "Глава 1.md" -> "Глава 1"
+function labelOf(name){
+  return /\.md$/i.test(name) ? name.replace(/\.md$/i, "") : null;
 }
-function sortKeyOf(range){
-  const m = range.match(/^(\d+)/);
-  return m ? parseInt(m[1], 10) : 0;
-}
-// заголовок/ярлык из имени: "390-393 Заголовок.md" -> "Заголовок"
-function titleOf(name){
-  return name.replace(/\.md$/i, "").replace(/^\d+(?:-\d+)?\s*/, "").trim();
-}
-// ярлык варианта → безопасное имя файла (без разделителей пути и т.п.)
+// символы, недопустимые в именах файлов
+const BAD_NAME_RE = /[\\/:*?"<>|]/;
+// ярлык варианта → безопасное имя (пробелы свернуть, запрещённые символы убрать)
 function sanitizeLabel(s){
   return String(s || "").replace(/[\\/:*?"<>|]/g, "").replace(/\s+/g, " ").trim();
+}
+// проверка метки блока: пустая / запрещённые символы / занятость другой меткой
+function labelError(label, exceptLabel){
+  if(!label) return "Метка не может быть пустой";
+  if(BAD_NAME_RE.test(label)) return "В метке нельзя использовать / \\ : * ? \" < > |";
+  if(state.blocks.some(b => b.label === label && b.label !== exceptLabel))
+    return "Блок с такой меткой уже есть";
+  return null;
+}
+// владелец файла-варианта = блок с самым длинным префиксом-меткой
+function ownerLabel(base, labels){
+  let best = null;
+  for(const L of labels)
+    if((base === L || base.startsWith(L + " ")) && (best === null || L.length > best.length)) best = L;
+  return best;
+}
+// ключ слота — для сопоставления при перестроении раскладки
+function slotKey(spec){
+  return spec.role === "variant" ? "variant|" + spec.label : spec.role;
+}
+function slotKeyOf(slot){
+  return slot.role === "variant" ? "variant|" + slot.label : slot.role;
 }
 // ключ слота — для сопоставления при перестроении раскладки
 function slotKey(spec){
@@ -536,48 +607,46 @@ async function useRoot(handle){
 
   els.rootName.innerHTML = "Папка: <code>" + esc(handle.name) + "</code>";
   els.reopenBtn.hidden = true;
+  els.newBlockBtn.hidden = false;
 
   await scan();
 }
 
 async function scan(){
-  // источники
-  const sources = new Map();   // range -> handle
+  // источники по метке (имя файла без .md)
+  const sources = new Map();   // label -> handle
   for await (const [name, h] of state.dirs.source.entries()){
     if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
-    const r = rangeOf(name);
-    if(r) sources.set(r, h);
+    sources.set(labelOf(name), h);
   }
-  // переводы (читаем фронтматтер ради статуса)
-  const trans = new Map();     // range -> {handle, title, status}
+  // переводы: метка из имени, заголовок и статус — из фронтматтера
+  const trans = new Map();     // label -> {handle, title, status}
   for await (const [name, h] of state.dirs.translation.entries()){
     if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
-    const r = rangeOf(name);
-    if(!r) continue;
-    let status = "todo";
+    let status = "todo", title = "";
     try{
       const { fmLines } = splitFrontmatter(await readFile(h));
       const s = fmGet(fmLines, "status");
       if(STATUSES.includes(s)) status = s;
+      title = fmGet(fmLines, "title") || "";
     }catch{}
-    trans.set(r, { handle: h, title: titleOf(name), status });
+    trans.set(labelOf(name), { handle: h, title, status });
   }
 
-  // объединяем по диапазону
-  const ranges = new Set([...sources.keys(), ...trans.keys()]);
+  // объединяем по метке
+  const labels = new Set([...sources.keys(), ...trans.keys()]);
   const blocks = [];
-  for(const r of ranges){
-    const t = trans.get(r);
+  for(const label of labels){
+    const t = trans.get(label);
     blocks.push({
-      range: r,
-      sortKey: sortKeyOf(r),
+      label,
       title: t ? t.title : "",
       status: t ? t.status : null,        // null = нет файла перевода
-      srcHandle: sources.get(r) || null,
+      srcHandle: sources.get(label) || null,
       trHandle: t ? t.handle : null,
     });
   }
-  blocks.sort((a,b) => a.sortKey - b.sortKey || a.range.localeCompare(b.range));
+  blocks.sort((a,b) => a.label.localeCompare(b.label));   // по алфавиту
   state.blocks = blocks;
 
   renderCounts();
@@ -600,17 +669,17 @@ function renderList(){
   els.list.innerHTML = "";
   for(const b of state.blocks){
     if(q){
-      const hay = (b.range + " " + b.title + " " + (b.status||"")).toLowerCase();
+      const hay = (b.label + " " + b.title + " " + (b.status||"")).toLowerCase();
       if(!hay.includes(q)) continue;
     }
     const li = document.createElement("li");
-    li.className = "blockitem" + (state.current && state.current.range === b.range ? " active" : "");
-    li.dataset.range = b.range;
+    li.className = "blockitem" + (state.current && state.current.label === b.label ? " active" : "");
+    li.dataset.label = b.label;
     li.innerHTML =
       `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
       `<span class="bi-text">` +
-        `<span class="bi-pages">${esc(b.range)}</span><br>` +
-        `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || "(без заголовка)")}</span>` +
+        `<span class="bi-pages">${esc(b.label)}</span><br>` +
+        `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || b.label)}</span>` +
       `</span>`;
     li.addEventListener("click", () => openBlock(b));
     els.list.appendChild(li);
@@ -627,11 +696,13 @@ async function openBlock(b){
   state.activeSector = null;
 
   for(const li of els.list.children)
-    li.classList.toggle("active", li.dataset.range === b.range);
+    li.classList.toggle("active", li.dataset.label === b.label);
 
-  els.bhTitle.textContent = b.title || "(без заголовка)";
-  els.bhTitle.classList.toggle("empty", !b.title);
-  els.bhPages.textContent = b.range;
+  // заголовок — редактируемое поле (пишется в title: перевода); метка — id блока
+  els.bhTitle.value = b.title || "";
+  els.bhTitle.placeholder = b.trHandle ? "Заголовок…" : (b.label + " (нет перевода)");
+  els.bhTitle.disabled = !b.trHandle;
+  els.bhLabel.textContent = b.label;
 
   els.emptyState.hidden = true;
   els.head.hidden = false;
@@ -761,7 +832,7 @@ function makeStart(slot){
   const box = document.createElement("div");
   box.className = "empty-slot";
   box.innerHTML =
-    `<div>Перевод для диапазона ${esc(state.current.range)} ещё не начат.</div>` +
+    `<div>Перевод для блока «${esc(state.current.label)}» ещё не начат.</div>` +
     `<button class="start-btn" data-action="start-translation">Начать перевод</button>`;
   slot.body.appendChild(box);
 }
@@ -816,7 +887,7 @@ async function loadSlotFromDisk(slot, b){
     makeEditor(slot, text);
   } else if(slot.role === "translation"){
     if(b.trHandle){
-      let body = "", fmLines = ["status: todo", "pages: " + b.range, "glossary_checked: false"];
+      let body = "", fmLines = ["title: ", "status: todo", "glossary_checked: false"];
       try{
         const p = splitFrontmatter(await readFile(b.trHandle));
         fmLines = p.fmLines || fmLines;
@@ -832,7 +903,7 @@ async function loadSlotFromDisk(slot, b){
     let text = "", h = null;
     const dir = state.dirs.variants;
     if(dir){
-      const name = `${b.range} ${slot.label}.md`;
+      const name = `${b.label} ${slot.label}.md`;
       try{ h = await dir.getFileHandle(name); text = await readFile(h); }
       catch{ h = null; text = ""; }
     }
@@ -938,7 +1009,7 @@ async function saveVariant(slot){
     if(!h){
       const dir = await ensureVariantsDir(true);
       if(!dir){ toast("Не удалось создать папку variants/", true); return; }
-      h = await dir.getFileHandle(`${b.range} ${slot.label}.md`, { create: true });
+      h = await dir.getFileHandle(`${b.label} ${slot.label}.md`, { create: true });
       slot.fileHandle = h;
     }
     await writeFile(h, slot.editor.value);
@@ -954,7 +1025,7 @@ async function saveSource(slot){
   try{
     let h = slot.fileHandle;
     if(!h){
-      h = await state.dirs.source.getFileHandle(`${b.range}.md`, { create: true });
+      h = await state.dirs.source.getFileHandle(`${b.label}.md`, { create: true });
       slot.fileHandle = h; b.srcHandle = h;
     }
     await writeFile(h, slot.editor.value);   // оригинал без фронтматтера — тело как есть
@@ -969,20 +1040,111 @@ async function startTranslation(){
   const raw = prompt("Заголовок перевода (можно оставить пустым):", "");
   if(raw === null) return;                    // отмена
   const title = raw.trim();
-  const name = title ? `${b.range} ${title}.md` : `${b.range}.md`;
   if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
   try{
-    const handle = await state.dirs.translation.getFileHandle(name, { create: true });
-    const content = buildTranslation(["status: todo", "pages: " + b.range, "glossary_checked: false"], "");
+    const handle = await state.dirs.translation.getFileHandle(`${b.label}.md`, { create: true });
+    const content = buildTranslation(["title: " + title, "status: todo", "glossary_checked: false"], "");
     await writeFile(handle, content);
     b.trHandle = handle; b.title = title; b.status = "todo";
-    els.bhTitle.textContent = b.title || "(без заголовка)";
-    els.bhTitle.classList.toggle("empty", !b.title);
+    els.bhTitle.value = title; els.bhTitle.disabled = false; els.bhTitle.placeholder = "Заголовок…";
     renderCounts(); renderList();
     await renderSlots({ reloadKeys: new Set(["translation"]) });
     if(state.transSlot && state.transSlot.editor) state.transSlot.editor.focus();
     toast("Перевод начат");
   }catch(e){ console.error(e); toast("Не удалось создать файл: " + e.message, true); }
+}
+
+// изменить заголовок блока — пишем только title: во фронтматтер перевода
+// (файлы НЕ переименовываются)
+async function saveTitle(){
+  const b = state.current;
+  if(!b || !b.trHandle) return;
+  const newTitle = els.bhTitle.value.trim();
+  if(newTitle === (b.title || "")) return;
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  const ts = state.transSlot;
+  try{
+    let fmLines, body;
+    if(ts && ts.fileHandle){
+      fmLines = ts.fmLines = fmSet(ts.fmLines, "title", newTitle);
+      body = ts.editor.value; ts.savedText = body;
+    } else {
+      const p = splitFrontmatter(await readFile(b.trHandle));
+      fmLines = fmSet(p.fmLines || [], "title", newTitle);
+      body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
+    }
+    await writeFile(b.trHandle, buildTranslation(fmLines, body));
+    b.title = newTitle;
+    updateDirtyUI(); renderList();
+    toast("Заголовок сохранён");
+  }catch(e){ console.error(e); toast("Ошибка записи заголовка: " + e.message, true); }
+}
+
+// собрать файлы-варианты, относящиеся к блоку (метка — самый длинный префикс)
+async function variantFilesOf(label){
+  const dir = state.dirs.variants;
+  const out = [];
+  if(!dir) return out;
+  const labels = state.blocks.map(b => b.label);
+  for await (const [name, h] of dir.entries()){
+    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
+    const base = name.replace(/\.md$/i, "");
+    if(ownerLabel(base, labels) === label)
+      out.push({ name, handle: h, yarlik: base.slice(label.length).replace(/^\s+/, "") });
+  }
+  return out;
+}
+
+// безопасно переименовать файл: записать новый, проверить, удалить старый
+async function renameFile(dir, oldName, newName){
+  if(oldName === newName) return;
+  const content = await readFile(await dir.getFileHandle(oldName));
+  const newH = await dir.getFileHandle(newName, { create: true });
+  await writeFile(newH, content);
+  if((await readFile(newH)) !== content) throw new Error("проверка после записи не прошла: " + newName);
+  await dir.removeEntry(oldName);
+}
+
+// переименовать блок = сменить метку: согласованно переименовать всю группу файлов
+async function renameBlock(b){
+  if(!b) return;
+  if(anyDirty()){ toast("Сначала сохраните изменения — потом переименование", true); return; }
+  const raw = prompt("Новая метка блока.\nЭто сменит имя файлов и порядок в списке.", b.label);
+  if(raw === null) return;
+  const nl = raw.trim();
+  const err = labelError(nl, b.label);
+  if(err){ toast(err, true); return; }
+  if(nl === b.label) return;
+  if(!confirm(`Переименовать блок «${b.label}» → «${nl}»?\nЭто меняет идентификатор и порядок в списке.`)) return;
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  try{
+    const vfiles = await variantFilesOf(b.label);   // до переименований, по старой метке
+    if(b.srcHandle) await renameFile(state.dirs.source, `${b.label}.md`, `${nl}.md`);
+    if(b.trHandle)  await renameFile(state.dirs.translation, `${b.label}.md`, `${nl}.md`);
+    for(const v of vfiles)
+      await renameFile(state.dirs.variants, v.name, v.yarlik ? `${nl} ${v.yarlik}.md` : `${nl}.md`);
+    await scan();
+    const nb = state.blocks.find(x => x.label === nl);
+    state.current = null;                 // чтобы openBlock не спрашивал про «несохранённое»
+    if(nb) await openBlock(nb);
+    toast("Блок переименован: " + nl);
+  }catch(e){ console.error(e); toast("Ошибка переименования: " + e.message, true); }
+}
+
+// создать новый блок из вставленного оригинала (+ метка + заголовок)
+async function createBlock(label, title, sourceText){
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return false; }
+  try{
+    const sH = await state.dirs.source.getFileHandle(`${label}.md`, { create: true });
+    await writeFile(sH, sourceText);
+    const tH = await state.dirs.translation.getFileHandle(`${label}.md`, { create: true });
+    await writeFile(tH, buildTranslation(["title: " + title, "status: todo", "glossary_checked: false"], ""));
+    await scan();
+    const nb = state.blocks.find(b => b.label === label);
+    if(nb) await openBlock(nb);
+    toast("Блок создан: " + label);
+    return true;
+  }catch(e){ console.error(e); toast("Не удалось создать блок: " + e.message, true); return false; }
 }
 
 async function setStatus(newStatus){
@@ -1003,7 +1165,7 @@ async function setStatus(newStatus){
     ts.savedText = ts.editor.value; updateDirtyUI();
     renderCounts();
     for(const li of els.list.children){
-      if(li.dataset.range === b.range){
+      if(li.dataset.label === b.label){
         const dot = li.querySelector(".dot");
         dot.className = "dot " + newStatus; dot.title = newStatus;
       }
@@ -1101,6 +1263,27 @@ els.statusBar.addEventListener("click", (e) => {
   if(btn) setStatus(btn.dataset.st);
 });
 
+// заголовок блока: сохранить по Enter/уходу фокуса
+els.bhTitle.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); els.bhTitle.blur(); } });
+els.bhTitle.addEventListener("change", saveTitle);
+els.renameBtn.addEventListener("click", () => renameBlock(state.current));
+
+// «Новый блок» — модалка
+function openNewBlock(){
+  els.nbSource.value = ""; els.nbLabel.value = ""; els.nbTitle.value = "";
+  els.modal.hidden = false; els.nbLabel.focus();
+}
+function closeNewBlock(){ els.modal.hidden = true; }
+els.newBlockBtn.addEventListener("click", openNewBlock);
+els.nbCancel.addEventListener("click", closeNewBlock);
+els.modal.addEventListener("click", (e) => { if(e.target === els.modal) closeNewBlock(); });
+els.nbCreate.addEventListener("click", async () => {
+  const label = els.nbLabel.value.trim();
+  const err = labelError(label, null);
+  if(err){ toast(err, true); els.nbLabel.focus(); return; }
+  if(await createBlock(label, els.nbTitle.value.trim(), els.nbSource.value)) closeNewBlock();
+});
+
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
   const tool = e.target.closest("[data-tool]");
@@ -1155,7 +1338,10 @@ document.addEventListener("keydown", (e) => {
   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
     e.preventDefault(); saveFocused();
   }
-  if(e.key === "Escape" && !els.pop.hidden) closePop();
+  if(e.key === "Escape"){
+    if(!els.pop.hidden) closePop();
+    if(!els.modal.hidden) closeNewBlock();
+  }
 });
 
 window.addEventListener("beforeunload", (e) => {
