@@ -396,7 +396,7 @@
       <textarea id="setPrompt" rows="4"></textarea>
     </label>
     <label>Модели (по одной в строке)
-      <span class="hint">список для выбора в окнах-вариантах; можно вписать свою строку прямо в слоте</span>
+      <span class="hint">точные id — на openrouter.ai/models; можно вписать свою строку прямо в слоте</span>
       <textarea id="setModels" rows="5"></textarea>
     </label>
     <div class="modal-actions">
@@ -449,9 +449,10 @@ const PROMPT_KEY  = "vychitka-prompt-template";
 const MODELS_KEY  = "vychitka-models";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_PROMPT = "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{original}";
+// дефолты — лишь подсказки; точные id моделей пользователь берёт на openrouter.ai/models
 const DEFAULT_MODELS = [
   "openai/gpt-4o",
-  "anthropic/claude-3.7-sonnet",
+  "anthropic/claude-3.5-sonnet",
   "google/gemini-2.5-pro",
   "deepseek/deepseek-chat",
 ];
@@ -478,6 +479,7 @@ const state = {
   transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
+  pending: new Set(),// идущие фоновые API-запросы: ключ = метка-блока \0 ярлык
 };
 
 /* ---- ссылки на DOM ---- */
@@ -869,6 +871,11 @@ function buildSlotDOM(spec, i){
     req.className = "mini-btn"; req.dataset.action = "request";
     req.textContent = "Запросить";
     head.appendChild(req);
+    slot.reqBtn = req;
+    // если для этого блока+ярлыка уже идёт фоновый запрос — отразить
+    if(state.current && state.pending.has(reqKey(state.current.label, spec.label))){
+      req.disabled = true; req.textContent = "Запрос…";
+    }
   }
 
   // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
@@ -1302,7 +1309,33 @@ async function openRequest(slot){
 function closeRequest(){ els.reqModal.hidden = true; state.requestSlot = null; }
 function reqError(msg){ els.reqStatus.className = "req-status error"; els.reqStatus.textContent = msg; }
 
-async function sendRequest(){
+// ключ фонового запроса = блок + ярлык варианта
+function reqKey(blockLabel, variantLabel){ return blockLabel + " " + variantLabel; }
+
+// индикатор «Запрос…» на кнопке варианта (если он сейчас виден)
+function setReqIndicator(blockLabel, variantLabel, on){
+  if(!state.current || state.current.label !== blockLabel) return;
+  const slot = state.slots.find(s => s.role === "variant" && s.label === variantLabel);
+  if(slot && slot.reqBtn){ slot.reqBtn.disabled = on; slot.reqBtn.textContent = on ? "Запрос…" : "Запросить"; }
+}
+
+// подставить ответ в окно варианта, если оно всё ещё показано для того же блока
+function applyResponse(blockLabel, variantLabel, content){
+  if(state.current && state.current.label === blockLabel){
+    const slot = state.slots.find(s => s.role === "variant" && s.label === variantLabel);
+    if(slot && slot.editor){
+      slot.editor.value = content;
+      updateBackdrop(slot); updateDirtyUI(); syncActiveFromEditor(slot);
+      toast("Ответ модели подставлен в «" + variantLabel + "» — проверьте и сохраните");
+      return;
+    }
+  }
+  toast("Ответ для «" + variantLabel + "» (блок «" + blockLabel + "») готов, но окно сейчас не показано", true);
+}
+
+// отправить запрос ФОНОВО: модалка сразу закрывается, работа не блокируется,
+// ответ сам подтянется в окно варианта по готовности
+function sendRequest(){
   const slot = state.requestSlot;
   if(!slot) return;
   const key = getApiKey();
@@ -1310,29 +1343,30 @@ async function sendRequest(){
   const model = els.reqModel.value.trim();
   if(!model){ reqError("Укажите модель."); return; }
   const prompt = els.reqPrompt.value;
+  const blockLabel = state.current.label, variantLabel = slot.label;
+  const k = reqKey(blockLabel, variantLabel);
+  if(state.pending.has(k)){ reqError("Запрос для этого варианта уже идёт."); return; }
 
-  els.reqSend.disabled = true;
-  els.reqStatus.className = "req-status loading";
-  els.reqStatus.textContent = "Запрос к модели…";
-  try{
-    const content = await callOpenRouter(key, model, prompt);
-    // запомнить выбранную модель на слоте/в раскладке
-    slot.model = model;
-    if(state.layout[slot.index] && state.layout[slot.index].role === "variant"){
-      state.layout[slot.index].model = model; saveLayout();
-    }
-    // подставить ответ в окно варианта — НЕ сохраняем автоматически
-    if(slot.editor){
-      slot.editor.value = content;
-      updateBackdrop(slot); updateDirtyUI(); syncActiveFromEditor(slot);
-    }
-    closeRequest();
-    toast("Ответ модели подставлен — проверьте и сохраните как вариант");
-  }catch(e){
-    reqError(e.message || String(e));
-  }finally{
-    els.reqSend.disabled = false;
+  // запомнить выбранную модель на слоте/в раскладке
+  slot.model = model;
+  if(state.layout[slot.index] && state.layout[slot.index].role === "variant"){
+    state.layout[slot.index].model = model; saveLayout();
   }
+
+  state.pending.add(k);
+  closeRequest();
+  setReqIndicator(blockLabel, variantLabel, true);
+  toast("Запрос отправлен — можно продолжать работу");
+
+  callOpenRouter(key, model, prompt).then(content => {
+    state.pending.delete(k);
+    setReqIndicator(blockLabel, variantLabel, false);
+    applyResponse(blockLabel, variantLabel, content);
+  }).catch(err => {
+    state.pending.delete(k);
+    setReqIndicator(blockLabel, variantLabel, false);
+    toast("Запрос («" + variantLabel + "»): " + (err && err.message || err), true);
+  });
 }
 
 /* ---- настройки ---- */
