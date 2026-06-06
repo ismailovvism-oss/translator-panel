@@ -61,6 +61,7 @@
   }
   .topbar .btn:hover{ border-color:var(--accent); }
   .topbar .btn.primary{ background:var(--accent); color:#fff; border-color:var(--accent); }
+  .topbar .btn.active{ background:var(--sel); border-color:var(--accent); }
   .root-name{ font-size:13px; color:var(--ink-soft); }
   .root-name code{ color:var(--ink); font-family:var(--ui); }
   .spacer{ flex:1 1 auto; }
@@ -109,6 +110,25 @@
     border-radius:7px; font-size:13px; background:#fff; color:var(--ink);
   }
   #filter:focus{ outline:none; border-color:var(--accent); }
+
+  /* индикатор прогресса по статусам (по числу разделов) */
+  .progress-wrap{ padding:10px 10px 0; }
+  .progress-text{
+    display:flex; justify-content:space-between; gap:8px;
+    font-size:12px; color:var(--ink-soft); margin-bottom:6px;
+  }
+  .progress-text b{ color:var(--ink); font-weight:600; }
+  .progress-text .p-rest{ color:var(--ink-faint); }
+  .progress-bar{
+    display:flex; height:8px; border-radius:5px; overflow:hidden;
+    background:var(--line-soft);
+  }
+  .progress-bar span{ display:block; height:100%; }
+  .progress-bar .p-todo{ background:var(--st-todo); }
+  .progress-bar .p-draft{ background:var(--st-draft); }
+  .progress-bar .p-review{ background:var(--st-review); }
+  .progress-bar .p-verified{ background:var(--st-verified); }
+
   .blocklist{ list-style:none; margin:0; padding:6px; overflow:auto; flex:1 1 auto; }
   .blockitem{
     display:flex; align-items:flex-start; gap:9px;
@@ -275,6 +295,10 @@
   .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
   .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--panel); }
 
+  /* режим чтения: спрятать служебные шапки у ВСЕХ окон (сворачивание по вертикали).
+     Не путать со сворачиванием слота в корешок (.collapsed — по ширине). */
+  .panes.heads-hidden .pane:not(.collapsed) .pane-head{ display:none; }
+
   .pane-head{
     flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
     padding:6px 12px; border-bottom:1px solid var(--line-soft); min-height:34px;
@@ -371,6 +395,7 @@
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
+  <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
 
@@ -397,6 +422,10 @@
     <div class="filter-wrap">
       <input id="filter" type="text" placeholder="Фильтр: заголовок, страницы, статус…">
     </div>
+    <div class="progress-wrap" id="progressWrap" hidden>
+      <div class="progress-text" id="progressText"></div>
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
     <ul class="blocklist" id="blockList"></ul>
   </aside>
 
@@ -407,6 +436,7 @@
       <input class="bh-title" id="bhTitle" placeholder="Заголовок…" title="Заголовок блока (хранится в переводе)">
       <span class="bh-label" id="bhLabel" title="Метка — имя файлов блока"></span>
       <button class="btn-mini" id="renameBtn" title="Переименовать блок — сменить метку (имя файлов и порядок)">переименовать</button>
+      <button class="btn-mini" id="splitBtn" title="Разделить раздел по активному сектору оригинала (сектор и далее — в новый раздел)">разделить</button>
       <span class="spacer"></span>
       <div class="statusbar" id="statusBar">
         <button data-st="todo">todo</button>
@@ -518,6 +548,7 @@ const MARKER_RE = () => /==\?[\s\S]*?==/g;   // живой открытый во
 const LAYOUT_KEY = "vychitka-layout";
 const SIDE_W_KEY = "vychitka-side-w";
 const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
+const HEADS_HIDDEN_KEY = "vychitka-heads-hidden";   // режим чтения: служебные шапки окон скрыты
 
 /* ---- API-режим (OpenRouter) ---- */
 const API_KEY_KEY  = "vychitka-api-key";
@@ -633,6 +664,7 @@ const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
+  headsToggle: $("headsToggle"),
   modelsList: $("modelsList"),
   settingsModal: $("settingsModal"), setKey: $("setKey"),
   setModels: $("setModels"), cmdList: $("cmdList"), cmdAdd: $("cmdAdd"),
@@ -643,7 +675,8 @@ const els = {
   pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
   popLabelWrap: $("popLabelWrap"), popAdd: $("popAdd"), popCancel: $("popCancel"),
   filter: $("filter"), list: $("blockList"),
-  head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"),
+  progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
+  head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"), splitBtn: $("splitBtn"),
   statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
@@ -910,6 +943,20 @@ function renderCounts(){
   els.counts.hidden = false;
   els.counts.innerHTML = STATUSES.map(s =>
     `<span class="c ${s}">${c[s]}</span>`).join("");
+
+  // индикатор прогресса по разделам (текущий срез по статусам, без истории)
+  const total = state.blocks.length;
+  els.progressWrap.hidden = !total;
+  if(total){
+    const noStatus = total - (c.todo + c.draft + c.review + c.verified);
+    els.progressText.innerHTML =
+      `<span>Готово: <b>verified ${c.verified} из ${total}</b></span>` +
+      (noStatus ? `<span class="p-rest" title="без перевода">+${noStatus} без перевода</span>` : "");
+    els.progressBar.innerHTML = STATUSES.map(s => {
+      const w = c[s] / total * 100;
+      return w ? `<span class="p-${s}" style="width:${w}%" title="${s}: ${c[s]}"></span>` : "";
+    }).join("");
+  }
 }
 
 function renderList(){
@@ -1118,7 +1165,8 @@ function makeEditor(slot, value){
 
   const sync = () => syncActiveFromEditor(slot);
   ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); });
-  ta.addEventListener("click", sync);
+  // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
+  ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); });
   ta.addEventListener("keyup", sync);
   ta.addEventListener("focus", sync);
   ta.addEventListener("scroll", () => { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; });
@@ -1174,6 +1222,63 @@ function syncActiveFromEditor(slot){
   if(!slot.editor) return;
   const idx = sectorAtCaret(parseBlocks(slot.editor.value), slot.editor.selectionStart);
   if(idx != null) setActiveSector(idx);
+}
+
+/* ---- доскролл окон к активному сектору ----
+   Поле и подложка имеют одинаковые метрики (inset:0, тот же шрифт/перенос), поэтому
+   вертикальное смещение символа меряем по подложке и применяем к прокрутке поля. */
+function caretTopInBackdrop(bd, charPos){
+  const walker = document.createTreeWalker(bd, NodeFilter.SHOW_TEXT, null);
+  let acc = 0, node;
+  while((node = walker.nextNode())){
+    const len = node.nodeValue.length;
+    if(acc + len >= charPos){
+      let s0 = Math.max(0, Math.min(charPos - acc, len));
+      let e0 = Math.min(s0 + 1, len);
+      if(s0 === e0 && len > 0){ s0 = Math.max(0, e0 - 1); }   // у конца узла — берём последний символ
+      const range = document.createRange();
+      range.setStart(node, s0); range.setEnd(node, e0);
+      const r = range.getBoundingClientRect();
+      const c = bd.getBoundingClientRect();
+      if(!r || (r.top === 0 && r.bottom === 0 && r.height === 0)) return null;
+      return r.top - c.top + bd.scrollTop;
+    }
+    acc += len;
+  }
+  return null;
+}
+// подкрутить одно окно так, чтобы сектор с номером ord оказался по центру.
+// нет сектора с таким номером → ближайший по номеру; не падать.
+function scrollSlotToSector(slot, ord){
+  if(!slot || !slot.editor || !slot.backdrop) return;
+  if(slot.pane && slot.pane.classList.contains("collapsed")) return;   // свёрнут в корешок — не видно
+  const secs = sectorsOf(parseBlocks(slot.editor.value));
+  if(!secs.length) return;
+  let sec = secs.find(s => s.idx === ord);
+  if(!sec){
+    let best = secs[0];
+    for(const s of secs) if(Math.abs(s.idx - ord) < Math.abs(best.idx - ord)) best = s;
+    sec = best;
+  }
+  const top = caretTopInBackdrop(slot.backdrop, sec.start);
+  if(top == null) return;
+  const bot = caretTopInBackdrop(slot.backdrop, sec.end);
+  const mid = (bot != null && bot >= top) ? (top + bot) / 2 : top;
+  const view = slot.editor.clientHeight;
+  const max = Math.max(0, slot.editor.scrollHeight - view);
+  const target = Math.max(0, Math.min(mid - view / 2, max));
+  slot.editor.scrollTo({ top: target, behavior: "smooth" });
+}
+// по клику в сектор: оригинал → только перевод; перевод → все прочие (оригинал+варианты);
+// вариант → ничего. Соответствие — по порядковому номеру сектора.
+function scrollTargetsFrom(src){
+  if(!src || !src.editor || src.role === "variant") return;
+  const ord = state.activeSector;
+  if(ord == null) return;
+  const targets = src.role === "source"
+    ? state.slots.filter(s => s.role === "translation" && s.editor)
+    : state.slots.filter(s => s !== src && s.role !== "translation" && s.editor);
+  for(const t of targets) scrollSlotToSector(t, ord);
 }
 
 /* ---- черновики: несохранённое содержимое окон удерживается в памяти сессии,
@@ -1458,6 +1563,92 @@ async function renameBlock(b){
     if(nb) await openBlock(nb);
     toast("Блок переименован: " + nl);
   }catch(e){ console.error(e); toast("Ошибка переименования: " + e.message, true); }
+}
+
+// разрезать текст на две части по сектору с заданным порядковым номером:
+// часть 1 = всё до начала сектора, часть 2 = сектор и всё после. Номера секторов
+// оригинала и перевода параллельны. Если сектора с таким номером в тексте нет —
+// режем насколько возможно: всё уходит в первую часть, вторая пустая.
+function splitTextAtSector(text, ordinal){
+  const sec = sectorsOf(parseBlocks(text)).find(s => s.idx === ordinal);
+  const cut = sec ? sec.start : text.length;
+  const first = text.slice(0, cut).replace(/\s+$/, "");
+  const second = text.slice(cut).replace(/^\n+/, "").replace(/\s+$/, "");
+  return [first, second];
+}
+// метка нового раздела при делении: исходная + индекс, первый свободный из -2, -3…
+function nextSplitLabel(base){
+  let i = 2;
+  while(state.blocks.some(b => b.label === `${base}-${i}`)) i++;
+  return { label: `${base}-${i}`, index: i };
+}
+
+// разделить раздел по активному сектору ОРИГИНАЛА: активный сектор = начало второй
+// части. До него — остаётся в исходном; сам сектор и далее — в новый раздел.
+// Перевод режется по сектору с тем же порядковым номером. Варианты не трогаем.
+async function splitBlock(b){
+  if(!b) return;
+  if(!b.srcHandle){ toast("В этом разделе нет оригинала — делить нечего", true); return; }
+  if(state.activeSector == null){
+    toast("Выделите сектор: поставьте курсор в абзац оригинала, с которого начнётся новый раздел", true); return;
+  }
+  if(state.activeSector === 0){
+    toast("Активный сектор — первый в оригинале; перед ним нет текста для исходного раздела", true); return;
+  }
+  if(anyDirty()){ toast("Сначала сохраните изменения — потом деление раздела", true); return; }
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+
+  // читаем свежими с диска (файлы мог менять git/другой инструмент)
+  let origText;
+  try{ origText = await readFile(b.srcHandle); }
+  catch(e){ toast("Не удалось прочитать оригинал: " + e.message, true); return; }
+
+  // активный сектор должен существовать в оригинале (деление идёт по нему)
+  const origSec = sectorsOf(parseBlocks(origText)).find(s => s.idx === state.activeSector);
+  if(!origSec){ toast("В оригинале нет сектора с таким номером — поставьте курсор в абзац оригинала", true); return; }
+
+  const [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
+  if(!origSecond){ toast("После активного сектора нет текста — делить нечего", true); return; }
+
+  // перевод (если есть) режем по тому же номеру сектора; фронтматтер исходного сохраняем
+  let trFmLines = null, trFirst = "", trSecond = "";
+  if(b.trHandle){
+    try{
+      const p = splitFrontmatter(await readFile(b.trHandle));
+      trFmLines = p.fmLines;
+      [trFirst, trSecond] = splitTextAtSector(p.body.replace(/^\n+/, "").replace(/\s+$/, ""), state.activeSector);
+    }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); return; }
+  }
+
+  const { label: newLabel, index: idx } = nextSplitLabel(b.label);
+  const newTitle = b.title ? `${b.title} ${idx}` : "";
+  const newStatus = b.status || "todo";
+  const newTrContent = buildTranslation(
+    ["title: " + newTitle, "status: " + newStatus, "glossary_checked: false"], trSecond);
+
+  try{
+    // 1) сперва создаём новый раздел и убеждаемся, что записалось
+    const newSrc = await state.dirs.source.getFileHandle(`${newLabel}.md`, { create: true });
+    await writeFile(newSrc, origSecond);
+    if((await readFile(newSrc)) !== origSecond) throw new Error("проверка нового оригинала не прошла");
+    const newTr = await state.dirs.translation.getFileHandle(`${newLabel}.md`, { create: true });
+    await writeFile(newTr, newTrContent);
+    if((await readFile(newTr)) !== newTrContent) throw new Error("проверка нового перевода не прошла");
+
+    // 2) только теперь обрезаем исходный раздел (хвост ушёл в новый)
+    await writeFile(b.srcHandle, origFirst);
+    if(b.trHandle) await writeFile(b.trHandle, buildTranslation(trFmLines, trFirst));
+
+    // содержимое обрезанного раздела на диске изменилось — снять старые черновики
+    state.drafts.delete(draftKey(b.label, "source"));
+    state.drafts.delete(draftKey(b.label, "translation"));
+
+    await scan();
+    const cur = state.blocks.find(x => x.label === b.label);
+    state.current = null;                  // чтобы openBlock не ловил «несохранённое»
+    if(cur) await openBlock(cur);
+    toast(`Раздел разделён → новый раздел «${newLabel}»`);
+  }catch(e){ console.error(e); toast("Ошибка деления: " + e.message, true); }
 }
 
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
@@ -1892,6 +2083,20 @@ els.sideToggle.addEventListener("click", () => {
   const c = els.layout.classList.toggle("side-collapsed");
   try{ localStorage.setItem(SIDE_COLLAPSE_KEY, c ? "1" : "0"); }catch{}
 });
+
+/* ---- режим чтения: скрыть служебные шапки окон (по вертикали) ---- */
+function applyHeadsHidden(){
+  const hidden = (() => { try{ return localStorage.getItem(HEADS_HIDDEN_KEY) === "1"; }catch{ return false; } })();
+  els.panes.classList.toggle("heads-hidden", hidden);
+  els.headsToggle.classList.toggle("active", hidden);
+  els.headsToggle.textContent = hidden ? "⊞ Шапки" : "⊟ Шапки";
+  els.headsToggle.title = hidden ? "Вернуть служебные шапки окон" : "Скрыть служебные шапки окон — режим чтения";
+}
+els.headsToggle.addEventListener("click", () => {
+  const hidden = !els.panes.classList.contains("heads-hidden");
+  try{ localStorage.setItem(HEADS_HIDDEN_KEY, hidden ? "1" : "0"); }catch{}
+  applyHeadsHidden();
+});
 (function(){
   let dragging = false;
   els.resizer.addEventListener("pointerdown", (e) => {
@@ -1927,6 +2132,7 @@ els.statusBar.addEventListener("click", (e) => {
 els.bhTitle.addEventListener("keydown", (e) => { if(e.key === "Enter"){ e.preventDefault(); els.bhTitle.blur(); } });
 els.bhTitle.addEventListener("change", saveTitle);
 els.renameBtn.addEventListener("click", () => renameBlock(state.current));
+els.splitBtn.addEventListener("click", () => splitBlock(state.current));
 
 // «Новый блок» — модалка
 function openNewBlock(){
@@ -2123,6 +2329,7 @@ window.addEventListener("beforeunload", (e) => {
   }
   state.layout = loadLayout();
   applySidePrefs();
+  applyHeadsHidden();
   renderModelsDatalist();
   try{
     const saved = await IDB.get("root");
