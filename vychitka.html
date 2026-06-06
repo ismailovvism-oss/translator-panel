@@ -621,6 +621,7 @@ const state = {
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
   pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
+  drafts: new Map(), // несохранённое содержимое окон по (раздел \0 ключ слота) — на сессию
   editCommands: [],  // рабочая копия команд в открытом окне настроек
   editRulesets: [],  // рабочая копия сводов правил в открытом окне настроек
 };
@@ -936,9 +937,9 @@ function renderList(){
 /* ===================== выбор и показ блока ===================== */
 
 async function openBlock(b){
-  if(state.current && anyDirty()){
-    if(!confirm("Есть несохранённые изменения. Переключить блок без сохранения?")) return;
-  }
+  // несохранённое текущего раздела удержим в памяти сессии (вернётся при возврате),
+  // поэтому предупреждение о потере при переключении больше не нужно
+  captureDrafts();
   state.current = b;
   state.activeSector = null;
 
@@ -1175,13 +1176,38 @@ function syncActiveFromEditor(slot){
   if(idx != null) setActiveSector(idx);
 }
 
+/* ---- черновики: несохранённое содержимое окон удерживается в памяти сессии,
+   привязанное к (раздел + слот), чтобы не теряться при переключении разделов
+   и при приходе ответа модели, пока активен другой раздел ---- */
+function draftKey(blockLabel, slotKeyStr){ return blockLabel + " " + slotKeyStr; }
+// снять несохранённое текущего раздела в память (перед уходом/перерисовкой)
+function captureDrafts(){
+  if(!state.current) return;
+  for(const s of state.slots){
+    if(!s.editor) continue;
+    const k = draftKey(state.current.label, slotKeyOf(s));
+    if(s.editor.value !== s.savedText) state.drafts.set(k, s.editor.value);
+    else state.drafts.delete(k);
+  }
+}
+// если для (раздел+слот) есть черновик — показать его (помечен несохранённым)
+function applyDraftIfAny(slot, b){
+  if(!slot.editor) return;
+  const k = draftKey(b.label, slotKeyOf(slot));
+  if(state.drafts.has(k)){ slot.editor.value = state.drafts.get(k); updateBackdrop(slot); }
+}
+// после сохранения файла черновик больше не нужен
+function clearDraft(slot){
+  if(state.current) state.drafts.delete(draftKey(state.current.label, slotKeyOf(slot)));
+}
+
 // загрузить содержимое слота с диска (свежим)
 async function loadSlotFromDisk(slot, b){
   if(slot.role === "source"){
     let text = "";
     if(b.srcHandle){ try{ text = await readFile(b.srcHandle); }catch{ text = ""; } }
     slot.fileHandle = b.srcHandle || null; slot.savedText = text;
-    makeEditor(slot, text);
+    makeEditor(slot, text); applyDraftIfAny(slot, b);
   } else if(slot.role === "translation"){
     if(b.trHandle){
       let body = "", fmLines = ["title: ", "status: todo", "glossary_checked: false"];
@@ -1191,7 +1217,7 @@ async function loadSlotFromDisk(slot, b){
         body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
       }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
       slot.fileHandle = b.trHandle; slot.fmLines = fmLines; slot.savedText = body;
-      makeEditor(slot, body);
+      makeEditor(slot, body); applyDraftIfAny(slot, b);
     } else {
       slot.fileHandle = null; slot.fmLines = null; slot.savedText = "";
       makeStart(slot);
@@ -1205,7 +1231,7 @@ async function loadSlotFromDisk(slot, b){
       catch{ h = null; text = ""; }
     }
     slot.fileHandle = h; slot.savedText = text;
-    makeEditor(slot, text);
+    makeEditor(slot, text); applyDraftIfAny(slot, b);
   }
 }
 
@@ -1298,7 +1324,7 @@ async function saveTranslation(slot){
   const body = ts.editor.value;
   try{
     await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, body));
-    ts.savedText = body; updateDirtyUI();
+    ts.savedText = body; clearDraft(ts); updateDirtyUI();
     toast("Сохранено");
   }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
 }
@@ -1316,7 +1342,7 @@ async function saveVariant(slot){
       slot.fileHandle = h;
     }
     await writeFile(h, slot.editor.value);
-    slot.savedText = slot.editor.value; updateDirtyUI();
+    slot.savedText = slot.editor.value; clearDraft(slot); updateDirtyUI();
     toast("Вариант сохранён: " + slot.label);
   }catch(e){ console.error(e); toast("Ошибка записи варианта: " + e.message, true); }
 }
@@ -1332,7 +1358,7 @@ async function saveSource(slot){
       slot.fileHandle = h; b.srcHandle = h;
     }
     await writeFile(h, slot.editor.value);   // оригинал без фронтматтера — тело как есть
-    slot.savedText = slot.editor.value; updateDirtyUI();
+    slot.savedText = slot.editor.value; clearDraft(slot); updateDirtyUI();
     toast("Оригинал сохранён");
   }catch(e){ console.error(e); toast("Ошибка записи оригинала: " + e.message, true); }
 }
@@ -1618,8 +1644,11 @@ function reflectRequestFor(blockLabel, slotKeyStr){
   if(slot) reflectSlotRequest(slot);
 }
 
-// подставить ответ в окно, если оно всё ещё показано для того же блока (в файл НЕ пишем)
+// положить ответ в окно его раздела/слота (в файл НЕ пишем). Привязка к источнику
+// запроса, а не к текущему окну: ответ всегда оседает в память сессии (черновик),
+// поэтому не теряется, если к моменту прихода активен другой раздел.
 function applyResponse(blockLabel, slotKeyStr, name, content){
+  state.drafts.set(draftKey(blockLabel, slotKeyStr), content);   // удержать на сессию
   if(state.current && state.current.label === blockLabel){
     const slot = state.slots.find(s => slotKeyOf(s) === slotKeyStr);
     if(slot && slot.editor){
@@ -1629,7 +1658,7 @@ function applyResponse(blockLabel, slotKeyStr, name, content){
       return;
     }
   }
-  toast("Ответ для «" + name + "» (блок «" + blockLabel + "») готов, но окно сейчас не показано", true);
+  toast("Ответ для «" + name + "» (раздел «" + blockLabel + "») придёт при возврате — не сохранён");
 }
 
 // отправить запрос ФОНОВО: модалка сразу закрывается, работа не блокируется,
@@ -1786,7 +1815,7 @@ async function setStatus(newStatus){
   if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
   try{
     await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, ts.editor.value));
-    ts.savedText = ts.editor.value; updateDirtyUI();
+    ts.savedText = ts.editor.value; clearDraft(ts); updateDirtyUI();
     renderCounts();
     for(const li of els.list.children){
       if(li.dataset.label === b.label){
@@ -2074,7 +2103,9 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("beforeunload", (e) => {
-  if(state.current && anyDirty()){ e.preventDefault(); e.returnValue = ""; }
+  // несохранённое в текущем окне ИЛИ удержанные черновики других разделов
+  // (последние пропадут при закрытии вкладки — об этом и предупреждаем)
+  if((state.current && anyDirty()) || state.drafts.size > 0){ e.preventDefault(); e.returnValue = ""; }
 });
 
 /* ===================== запуск ===================== */
