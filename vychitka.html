@@ -533,26 +533,41 @@ const DEFAULT_MODELS = [
   "deepseek/deepseek-chat",
 ];
 
-// scope команды = что слать модели; {text} для одиночных, {original}/{translation} для пары
-const SCOPES = [
-  { id: "orig-all",    label: "Оригинал целиком",            hint: "весь оригинал" },
-  { id: "orig-sector", label: "Оригинал — активный сектор",  hint: "сектор оригинала" },
-  { id: "trans-all",   label: "Перевод целиком",             hint: "весь перевод" },
-  { id: "trans-sector",label: "Перевод — активный сектор",   hint: "сектор перевода" },
-  { id: "orig-trans",  label: "Оригинал + перевод (целиком)",hint: "оригинал + перевод" },
-  { id: "self",        label: "Текст этого слота",           hint: "текст этого окна" },
+// скоп команды = две независимые оси: источник × охват. Любое сочетание доступно.
+// {text} — для одиночного источника; {original}/{translation} — для «оригинал + перевод».
+const SOURCES = [
+  { id: "orig",  label: "Оригинал" },
+  { id: "trans", label: "Перевод" },
+  { id: "both",  label: "Оригинал + перевод" },
+  { id: "self",  label: "Этот слот" },
 ];
-function scopeLabel(id){ const s = SCOPES.find(x => x.id === id); return s ? s.label : id; }
-function scopeHint(id){ const s = SCOPES.find(x => x.id === id); return s ? s.hint : id; }
+const SPANS = [
+  { id: "all",    label: "целиком" },
+  { id: "sector", label: "активный сектор" },
+];
+function sourceLabel(id){ const s = SOURCES.find(x => x.id === id); return s ? s.label : id; }
+function spanLabel(id){ const s = SPANS.find(x => x.id === id); return s ? s.label : id; }
+function cmdScopeHint(cmd){ return sourceLabel(cmd.source) + " — " + spanLabel(cmd.span); }
+// разложить прежний единый scope в пару источник+охват (миграция старых команд)
+function migrateScope(c){
+  if(SOURCES.some(s => s.id === c.source) && SPANS.some(s => s.id === c.span)) return { source: c.source, span: c.span };
+  const map = {
+    "orig-all":["orig","all"], "orig-sector":["orig","sector"],
+    "trans-all":["trans","all"], "trans-sector":["trans","sector"],
+    "orig-trans":["both","all"], "self":["self","all"],
+  };
+  const m = map[c.scope] || ["orig","all"];
+  return { source: m[0], span: m[1] };
+}
 
 // предустановленные команды-примеры (редактируемы и удаляемы в Настройках)
 // ruleset = имя свода правил, на который ссылается команда ("" = без свода)
 const DEFAULT_COMMANDS = [
-  { name: "Перевести",          scope: "orig-all",    ruleset: "", prompt: "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{text}" },
-  { name: "Тафсир аята",        scope: "orig-sector", ruleset: "", prompt: "Дай краткий тафсир (толкование) следующего фрагмента:\n\n{text}" },
-  { name: "Разбор грамматики",  scope: "orig-sector", ruleset: "", prompt: "Разбери грамматику (إعراب) следующего арабского фрагмента, по словам:\n\n{text}" },
-  { name: "Проверь мой перевод",scope: "orig-trans",  ruleset: "", prompt: "Сверь перевод с оригиналом и укажи ошибки, неточности и пропуски.\n\nОригинал:\n{original}\n\nПеревод:\n{translation}" },
-  { name: "Сделай естественнее",scope: "trans-all",   ruleset: "", prompt: "Перепиши следующий русский перевод, сделав его естественнее и глаже, не искажая смысл:\n\n{text}" },
+  { name: "Перевести",          source: "orig",  span: "all",    ruleset: "", prompt: "Переведи следующий арабский текст на русский, сохраняя смысл. Текст:\n\n{text}" },
+  { name: "Тафсир аята",        source: "orig",  span: "sector", ruleset: "", prompt: "Дай краткий тафсир (толкование) следующего фрагмента:\n\n{text}" },
+  { name: "Разбор грамматики",  source: "orig",  span: "sector", ruleset: "", prompt: "Разбери грамматику (إعراب) следующего арабского фрагмента, по словам:\n\n{text}" },
+  { name: "Проверь мой перевод",source: "both",  span: "all",    ruleset: "", prompt: "Сверь перевод с оригиналом и укажи ошибки, неточности и пропуски.\n\nОригинал:\n{original}\n\nПеревод:\n{translation}" },
+  { name: "Сделай естественнее",source: "trans", span: "all",    ruleset: "", prompt: "Перепиши следующий русский перевод, сделав его естественнее и глаже, не искажая смысл:\n\n{text}" },
 ];
 
 // настройки — только в localStorage пользователя, никогда в файлы/логи
@@ -570,8 +585,8 @@ function getCommands(){
     if(raw){
       const a = JSON.parse(raw);
       if(Array.isArray(a)){
-        const out = a.filter(c => c && typeof c.name === "string" && typeof c.prompt === "string" && SCOPES.some(s => s.id === c.scope));
-        if(out.length) return out.map(c => ({ name: c.name, scope: c.scope, prompt: c.prompt, ruleset: typeof c.ruleset === "string" ? c.ruleset : "" }));
+        const out = a.filter(c => c && typeof c.name === "string" && typeof c.prompt === "string");
+        if(out.length) return out.map(c => ({ name: c.name, ...migrateScope(c), prompt: c.prompt, ruleset: typeof c.ruleset === "string" ? c.ruleset : "" }));
       }
     }
   }catch{}
@@ -765,7 +780,11 @@ const IDB = (() => {
 function normalizeSpec(s){
   if(!s || typeof s !== "object") return null;
   const collapsed = !!s.collapsed;
-  if(s.role === "source") return { role: "source", collapsed };
+  if(s.role === "source") return {
+    role: "source", collapsed,
+    model: typeof s.model === "string" ? s.model : "",
+    command: typeof s.command === "string" ? s.command : "",
+  };
   if(s.role === "translation") return {
     role: "translation", collapsed,
     model: typeof s.model === "string" ? s.model : "",
@@ -1008,9 +1027,9 @@ function buildSlotDOM(spec, i){
     "Вариант · " + spec.label;
   head.appendChild(label);
 
-  // у варианта и перевода — выбор команды, модели и кнопка запроса (API-режим).
+  // у оригинала, перевода и варианта — выбор команды, модели и кнопка запроса.
   // group прячется, если в окне нет редактируемого поля (перевод без файла).
-  if(spec.role === "variant" || spec.role === "translation"){
+  if(spec.role === "variant" || spec.role === "translation" || spec.role === "source"){
     const grp = document.createElement("span");
     grp.className = "req-group";
     const cmds = getCommands();
@@ -1022,7 +1041,7 @@ function buildSlotDOM(spec, i){
     grp.appendChild(sel);
     const hint = document.createElement("span");
     hint.className = "cmd-hint"; slot.cmdHint = hint;
-    hint.textContent = "→ " + scopeHint(commandByName(cur).scope);
+    hint.textContent = "→ " + cmdScopeHint(commandByName(cur));
     grp.appendChild(hint);
     const model = document.createElement("input");
     model.className = "model-input"; model.type = "text";
@@ -1457,24 +1476,33 @@ function sectorTextOf(full){
   const r = sectorRange(parseBlocks(full), state.activeSector);
   return r ? full.slice(r[0], r[1]) : null;
 }
-// разрешить текст(ы) по scope команды; {error} — мягкое сообщение, запрос не уходит
+// применить охват (целиком / активный сектор) к полному тексту; {error} — мягко
+function applySpan(full, span){
+  if(span !== "sector") return { text: full };
+  if(state.activeSector == null)
+    return { error: "Выделите сектор: поставьте курсор в нужный абзац — у команды охват «активный сектор»." };
+  const t = sectorTextOf(full);
+  if(t == null) return { error: "В этом окне нет сектора с таким номером — выберите другой абзац." };
+  return { text: t };
+}
+// полный текст источника команды
+async function sourceFullText(source, slot){
+  if(source === "self")  return slot && slot.editor ? slot.editor.value : "";
+  if(source === "trans") return await currentTranslation();
+  return await currentOriginal();   // "orig" и резерв
+}
+// разрешить текст(ы) по двум осям команды; {error} — мягкое сообщение, запрос не уходит
 async function resolveCommand(cmd, slot){
-  if(cmd.scope === "self")      return { text: slot && slot.editor ? slot.editor.value : "" };
-  if(cmd.scope === "orig-all")  return { text: await currentOriginal() };
-  if(cmd.scope === "trans-all") return { text: await currentTranslation() };
-  if(cmd.scope === "orig-trans") return { original: await currentOriginal(), translation: await currentTranslation() };
-  if(cmd.scope === "orig-sector" || cmd.scope === "trans-sector"){
-    if(state.activeSector == null)
-      return { error: "Выделите сектор: поставьте курсор в нужный абзац — этой команде нужен активный сектор." };
-    const full = cmd.scope === "orig-sector" ? await currentOriginal() : await currentTranslation();
-    const t = sectorTextOf(full);
-    if(t == null) return { error: "В этом окне нет сектора с таким номером — выберите другой абзац." };
-    return { text: t };
+  const span = cmd.span === "sector" ? "sector" : "all";
+  if(cmd.source === "both"){
+    const o = applySpan(await currentOriginal(), span);    if(o.error) return o;
+    const t = applySpan(await currentTranslation(), span); if(t.error) return t;
+    return { original: o.text, translation: t.text };
   }
-  return { text: "" };
+  return applySpan(await sourceFullText(cmd.source, slot), span);
 }
 function buildCommandPrompt(cmd, parts){
-  let body = cmd.scope === "orig-trans"
+  let body = cmd.source === "both"
     ? cmd.prompt.split("{original}").join(parts.original || "").split("{translation}").join(parts.translation || "")
     : cmd.prompt.split("{text}").join(parts.text || "");
   // свод правил подставляется (резолвится по имени при каждом запросе, не копируется в команду)
@@ -1526,7 +1554,7 @@ function slotDisplayName(slot){
 // открыть окно запроса (вариант или перевод) по команде слота; текст уже подставлен
 async function openRequest(slot){
   const b = state.current;
-  if(!b || !slot || !(slot.role === "variant" || slot.role === "translation") || !slot.editor) return;
+  if(!b || !slot || !slot.editor || !slot.reqBtn) return;
   const cmd = currentCommandFor(slot);
   const resolved = await resolveCommand(cmd, slot);
   if(resolved.error){ toast(resolved.error, true); return; }   // напр. нет активного сектора
@@ -1692,15 +1720,18 @@ function renderCommandsEditor(){
   state.editCommands.forEach((c, idx) => {
     const card = document.createElement("div");
     card.className = "cmd-card"; card.dataset.idx = idx;
-    const opts = SCOPES.map(s => `<option value="${s.id}"${s.id === c.scope ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+    const srcOpts = SOURCES.map(s => `<option value="${s.id}"${s.id === c.source ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+    const spanOpts = SPANS.map(s => `<option value="${s.id}"${s.id === c.span ? " selected" : ""}>${esc(s.label)}</option>`).join("");
     card.innerHTML =
       `<div class="cmd-row">` +
         `<input class="cmd-name" data-field="name" placeholder="Имя команды" value="${esc(c.name)}">` +
-        `<select data-field="scope">${opts}</select>` +
         `<button class="cmd-del" data-action="cmd-del" type="button">Удалить</button>` +
       `</div>` +
-      `<div class="cmd-row"><span class="cmd-rs-label">Свод правил:</span>` +
-        `<select data-field="ruleset">${rsOpts(c.ruleset || "")}</select></div>` +
+      `<div class="cmd-row">` +
+        `<span class="cmd-rs-label">Источник:</span><select data-field="source">${srcOpts}</select>` +
+        `<span class="cmd-rs-label">Охват:</span><select data-field="span">${spanOpts}</select>` +
+        `<span class="cmd-rs-label">Свод:</span><select data-field="ruleset">${rsOpts(c.ruleset || "")}</select>` +
+      `</div>` +
       `<textarea data-field="prompt" placeholder="Текст инструкции модели… ({text} или {original}/{translation})">${esc(c.prompt)}</textarea>`;
     els.cmdList.appendChild(card);
   });
@@ -1720,8 +1751,13 @@ function saveSettings(){
     .map(r => ({ name: (r.name || "").trim(), text: r.text || "" }))
     .filter(r => r.name);
   const cmds = state.editCommands
-    .map(c => ({ name: (c.name || "").trim(), scope: c.scope, ruleset: c.ruleset || "", prompt: c.prompt }))
-    .filter(c => c.name && c.prompt && SCOPES.some(s => s.id === c.scope));
+    .map(c => ({
+      name: (c.name || "").trim(),
+      source: SOURCES.some(s => s.id === c.source) ? c.source : "orig",
+      span: SPANS.some(s => s.id === c.span) ? c.span : "all",
+      ruleset: c.ruleset || "", prompt: c.prompt,
+    }))
+    .filter(c => c.name && c.prompt);
   try{
     localStorage.setItem(API_KEY_KEY, els.setKey.value.trim());
     const models = els.setModels.value.split("\n").map(s => s.trim()).filter(Boolean);
@@ -1887,7 +1923,7 @@ els.settingsModal.addEventListener("click", (e) => { if(e.target === els.setting
 
 // редактор команд: синхронизация полей с рабочей копией
 els.cmdAdd.addEventListener("click", () => {
-  state.editCommands.push({ name: "", scope: "orig-all", prompt: "" });
+  state.editCommands.push({ name: "", source: "orig", span: "all", ruleset: "", prompt: "" });
   renderCommandsEditor();
 });
 function syncCmdField(e){
@@ -1977,14 +2013,14 @@ els.panes.addEventListener("click", (e) => {
 
 // выбор модели/команды в окне (вариант или перевод) — пишем в раскладку (localStorage)
 els.panes.addEventListener("change", (e) => {
-  const requestable = (spec) => spec && (spec.role === "variant" || spec.role === "translation");
+  const requestable = (spec) => spec && (spec.role === "variant" || spec.role === "translation" || spec.role === "source");
   const cs = e.target.closest("[data-action='cmd-select']");
   if(cs){
     const idx = parseInt(cs.closest(".pane").dataset.index, 10);
     const slot = state.slots[idx], spec = state.layout[idx];
     if(slot){
       slot.command = cs.value;
-      if(slot.cmdHint) slot.cmdHint.textContent = "→ " + scopeHint(commandByName(cs.value).scope);
+      if(slot.cmdHint) slot.cmdHint.textContent = "→ " + cmdScopeHint(commandByName(cs.value));
     }
     if(requestable(spec)){ spec.command = cs.value; saveLayout(); }
     return;
