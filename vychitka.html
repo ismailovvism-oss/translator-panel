@@ -465,6 +465,7 @@
         <button data-st="verified">verified</button>
       </div>
       <button class="save-btn" id="saveBtn" title="Сохраняет только окно перевода. У оригинала и вариантов — свои кнопки в их шапках. Ctrl+S сохраняет окно, в котором курсор">Сохранить перевод</button>
+      <button class="save-btn" id="saveAllBtn" hidden title="Сохранить все окна с несохранёнными изменениями — во всех разделах">Сохранить всё</button>
       <span class="dirty" id="dirty" title="Есть несохранённые изменения — нажмите, чтобы увидеть где">●</span>
       <div class="unsaved-pop" id="unsavedPop" hidden></div>
     </div>
@@ -699,7 +700,7 @@ const els = {
   progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
   head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"), splitBtn: $("splitBtn"),
   statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
-  unsavedPop: $("unsavedPop"),
+  unsavedPop: $("unsavedPop"), saveAllBtn: $("saveAllBtn"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
   nbTitle: $("nbTitle"), nbCreate: $("nbCreate"), nbCancel: $("nbCancel"),
@@ -1472,6 +1473,7 @@ function dirtyWindowNames(){
 function updateDirtyUI(){
   const m = unsavedMap();
   els.dirty.classList.toggle("on", m.size > 0);
+  els.saveAllBtn.hidden = m.size === 0;
   for(const s of state.slots) if(s.dot) s.dot.classList.toggle("on", slotDirty(s));
   // точки у разделов в списке
   for(const li of els.list.children){
@@ -1503,6 +1505,14 @@ function renderUnsavedPop(m){
     });
     els.unsavedPop.appendChild(btn);
   }
+  const foot = document.createElement("div");
+  foot.className = "pop-actions";
+  const saveAllB = document.createElement("button");
+  saveAllB.className = "btn primary";
+  saveAllB.textContent = "Сохранить всё";
+  saveAllB.addEventListener("click", () => { els.unsavedPop.hidden = true; saveAll(); });
+  foot.appendChild(saveAllB);
+  els.unsavedPop.appendChild(foot);
   els.unsavedPop.hidden = false;
 }
 function hasLiveMarker(text){ return MARKER_RE().test(text); }
@@ -1551,6 +1561,67 @@ async function saveSource(slot){
     slot.savedText = slot.editor.value; clearDraft(slot); updateDirtyUI();
     toast("Оригинал сохранён");
   }catch(e){ console.error(e); toast("Ошибка записи оригинала: " + e.message, true); }
+}
+
+// записать черновик в файл по ключу (метка + ключ слота), не открывая раздел.
+// Возвращает «метка: окно» для отчёта; при успехе удаляет черновик.
+async function saveDraftByKey(key){
+  let label = null;
+  for(const b of state.blocks)
+    if(key.startsWith(b.label + " ") && (!label || b.label.length > label.length)) label = b.label;
+  if(!label) throw new Error("раздел не найден");
+  const sk = key.slice(label.length + 1);
+  const body = state.drafts.get(key);
+  if(sk === "source"){
+    const h = await state.dirs.source.getFileHandle(`${label}.md`, { create: true });
+    await writeFile(h, body);   // оригинал без фронтматтера — тело как есть
+  } else if(sk === "translation"){
+    const h = await state.dirs.translation.getFileHandle(`${label}.md`, { create: true });
+    // фронтматтер читаем свежим из файла — черновик хранит только тело
+    let fmLines = ["title: ", "status: todo", "glossary_checked: false"];
+    try{
+      const p = splitFrontmatter(await readFile(h));
+      if(p.fmLines) fmLines = p.fmLines;
+    }catch{}
+    await writeFile(h, buildTranslation(fmLines, body));
+    const b = state.blocks.find(x => x.label === label);
+    if(b && !b.trHandle){
+      b.trHandle = h; b.status = fmGet(fmLines, "status") || "todo";
+      renderCounts(); renderList();
+    }
+  } else if(sk.startsWith("variant|")){
+    const dir = await ensureVariantsDir(true);
+    if(!dir) throw new Error("не удалось создать папку variants/");
+    const h = await dir.getFileHandle(`${label} ${sk.slice("variant|".length)}.md`, { create: true });
+    await writeFile(h, body);
+  } else throw new Error("неизвестное окно");
+  state.drafts.delete(key);
+  return label + ": " + slotKeyName(sk);
+}
+
+// сохранить всё несохранённое: живые окна текущего раздела + черновики остальных
+async function saveAll(){
+  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  let saved = 0; const failed = [];
+  if(state.current){
+    for(const s of state.slots){
+      if(!slotDirty(s)) continue;
+      const name = state.current.label + ": " + slotKeyName(slotKeyOf(s));
+      if(s.role === "translation") await saveTranslation(s);
+      else if(s.role === "variant") await saveVariant(s);
+      else await saveSource(s);
+      if(slotDirty(s)) failed.push(name); else saved++;
+    }
+  }
+  // оставшиеся черновики (другие разделы; окна, убранные из раскладки)
+  for(const k of [...state.drafts.keys()]){
+    try{ await saveDraftByKey(k); saved++; }
+    catch(e){ failed.push(k + " — " + e.message); }
+  }
+  updateDirtyUI();
+  if(failed.length) toast(`Сохранено окон: ${saved}; не удалось: ${failed.join("; ")}`, true);
+  else if(saved) toast(`Сохранено всё — окон: ${saved}`);
+  else toast("Несохранённых изменений нет");
 }
 
 async function startTranslation(){
@@ -2207,6 +2278,7 @@ els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.filter.addEventListener("input", renderList);
 els.saveBtn.addEventListener("click", () => saveTranslation());
+els.saveAllBtn.addEventListener("click", () => saveAll());
 els.dirty.addEventListener("click", () => {
   if(els.unsavedPop.hidden) renderUnsavedPop();
   else els.unsavedPop.hidden = true;
