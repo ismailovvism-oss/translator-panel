@@ -1776,6 +1776,40 @@ function splitTextAtSector(text, ordinal){
   const second = text.slice(cut).replace(/^\n+/, "").replace(/\s+$/, "");
   return [first, second];
 }
+/* ---- сноски при делении: определение [^id]: уходит в ту часть, где на
+   сноску ссылаются; ничейные определения остаются в своей части ---- */
+
+// блок определения сноски: строка «[^id]: …» + строки-продолжения
+// (до пустой строки или следующего определения)
+const FOOTNOTE_DEF_RE = /^\[\^([^\]\n]+)\]:[^\n]*(?:\n(?!\s*$)(?!\[\^)[^\n]*)*/gm;
+
+// вынуть определения сносок из текста: [текст без определений, [{id, text}]]
+function extractFootnoteDefs(text){
+  const defs = [];
+  const body = text
+    .replace(FOOTNOTE_DEF_RE, (m, id) => { defs.push({ id, text: m }); return ""; })
+    .replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
+  return [body, defs];
+}
+
+function redistributeFootnotes(first, second){
+  const [f1, defs1] = extractFootnoteDefs(first);
+  const [f2, defs2] = extractFootnoteDefs(second);
+  if(!defs1.length && !defs2.length) return [first, second];
+  const refRe = (id) =>
+    new RegExp("\\[\\^" + id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\](?!:)");
+  const for1 = [], for2 = [];
+  for(const d of [...defs1, ...defs2]){
+    const in1 = refRe(d.id).test(f1), in2 = refRe(d.id).test(f2);
+    if(in1) for1.push(d);
+    if(in2) for2.push(d);                              // упомянута в обеих — в обе
+    if(!in1 && !in2) (defs1.includes(d) ? for1 : for2).push(d);  // ничейная — где была
+  }
+  const attach = (body, ds) =>
+    ds.length ? body + "\n\n" + ds.map(d => d.text).join("\n\n") : body;
+  return [attach(f1, for1), attach(f2, for2)];
+}
+
 // метка нового раздела при делении: исходная + индекс, первый свободный из -2, -3…
 function nextSplitLabel(base){
   let i = 2;
@@ -1807,8 +1841,9 @@ async function splitBlock(b){
   const origSec = sectorsOf(parseBlocks(origText)).find(s => s.idx === state.activeSector);
   if(!origSec){ toast("В оригинале нет сектора с таким номером — поставьте курсор в абзац оригинала", true); return; }
 
-  const [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
+  let [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
   if(!origSecond){ toast("После активного сектора нет текста — делить нечего", true); return; }
+  [origFirst, origSecond] = redistributeFootnotes(origFirst, origSecond);
 
   // перевод (если есть) режем по тому же номеру сектора; фронтматтер исходного сохраняем
   let trFmLines = null, trFirst = "", trSecond = "";
@@ -1817,6 +1852,7 @@ async function splitBlock(b){
       const p = splitFrontmatter(await readFile(b.trHandle));
       trFmLines = p.fmLines;
       [trFirst, trSecond] = splitTextAtSector(p.body.replace(/^\n+/, "").replace(/\s+$/, ""), state.activeSector);
+      [trFirst, trSecond] = redistributeFootnotes(trFirst, trSecond);
     }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); return; }
   }
 
