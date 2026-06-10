@@ -867,7 +867,16 @@ function slotKeyOf(slot){
 function splitFrontmatter(text){
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if(!m) return { fmLines: null, body: text };
-  return { fmLines: m[1].split(/\r?\n/), body: text.slice(m[0].length) };
+  let body = text.slice(m[0].length);
+  // повторные фронтматтер-блоки сразу после первого — артефакт заготовок;
+  // срезаем, но только если внутри блока нет пустых строк (иначе это «---» как
+  // разделитель в теле, его не трогаем)
+  for(;;){
+    const m2 = body.match(/^\n*---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+    if(!m2 || m2[1].split(/\r?\n/).some(l => l.trim() === "")) break;
+    body = body.slice(m2[0].length);
+  }
+  return { fmLines: m[1].split(/\r?\n/), body };
 }
 function fmGet(lines, key){
   if(!lines) return null;
