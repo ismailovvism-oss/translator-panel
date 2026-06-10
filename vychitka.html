@@ -66,6 +66,14 @@
   .root-name{ font-size:13px; color:var(--ink-soft); }
   .root-name code{ color:var(--ink); font-family:var(--ui); }
   .spacer{ flex:1 1 auto; }
+
+  /* панель вставки разметки — действует на окно, в котором стоит курсор */
+  .md-tools{ display:inline-flex; gap:3px; }
+  .md-tools button{
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:6px; cursor:pointer; font-size:12px; padding:4px 8px; min-width:28px;
+  }
+  .md-tools button:hover{ border-color:var(--accent); color:var(--ink); }
   .counts{ font-size:12px; color:var(--ink-soft); display:flex; gap:10px; }
   .counts .c::before{
     content:""; display:inline-block; width:8px; height:8px;
@@ -317,6 +325,23 @@
   .u-item .u-label{ font-variant-numeric:tabular-nums; }
   .u-item .u-wins{ color:var(--ink-soft); }
 
+  /* строка поиска/замены (Ctrl+F) — ищет в окне, где последним был курсор */
+  .findbar{
+    flex:0 0 auto; display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+    padding:6px 16px; background:var(--panel); border-bottom:1px solid var(--line);
+    font-size:13px;
+  }
+  .findbar input{
+    width:210px; padding:5px 9px; border:1px solid var(--line); border-radius:7px;
+    font-size:13px; background:#fff; color:var(--ink); font-family:inherit;
+  }
+  .findbar input:focus{ outline:none; border-color:var(--accent); }
+  .findbar .btn-mini.active{ background:var(--sel); border-color:var(--accent); color:var(--ink); }
+  .find-count{ color:var(--ink-soft); font-variant-numeric:tabular-nums; min-width:56px; text-align:center; }
+  .find-target{ color:var(--ink-faint); font-size:12px; }
+  .find-lbl{ color:var(--ink-soft); font-size:12px; }
+  .find-sep{ width:1px; align-self:stretch; background:var(--line); margin:0 3px; }
+
   /* ---------- панели-слоты ---------- */
   .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
   .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--panel); position:relative; }
@@ -381,6 +406,9 @@
   }
   .backdrop{ overflow:auto; color:transparent; pointer-events:none; }
   .backdrop mark{ background:var(--mark); box-shadow:0 0 0 1px var(--mark-edge) inset; border-radius:2px; color:transparent; }
+  /* совпадения поиска: голубой не пересекается с жёлтым маркером и фоном сектора */
+  .backdrop .bd-find{ background:rgba(47,111,176,.18); box-shadow:0 0 0 1px rgba(47,111,176,.30) inset; border-radius:2px; }
+  .backdrop .bd-find-cur{ background:rgba(47,111,176,.42); }
   .backdrop .sec-active{ background:rgba(107,79,43,.12); border-radius:3px; }
   /* пометка строки-заголовка в редактируемом поле: фон + боковая полоса,
      без изменения размера шрифта (метрики textarea и подложки совпадают) */
@@ -433,6 +461,13 @@
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
+  <span class="md-tools" id="mdTools" hidden>
+    <button data-md="bold" title="Жирный: **текст** (Ctrl+B)"><b>Ж</b></button>
+    <button data-md="italic" title="Курсив: *текст* (Ctrl+I)"><i>К</i></button>
+    <button data-md="u" title="Подчёркнутый: &lt;u&gt;текст&lt;/u&gt; (Ctrl+U)"><u>Ч</u></button>
+    <button data-md="footnote" title="Вставить сноску: [^N] в месте курсора + заготовка определения в конце текста">Сноска</button>
+    <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
+  </span>
   <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
@@ -486,6 +521,24 @@
       <button class="save-btn" id="saveAllBtn" hidden title="Сохранить все окна с несохранёнными изменениями — во всех разделах. У каждого окна есть и своя кнопка; Ctrl+S сохраняет окно, в котором курсор">Сохранить всё</button>
       <span class="dirty" id="dirty" title="Есть несохранённые изменения — нажмите, чтобы увидеть где">●</span>
       <div class="unsaved-pop" id="unsavedPop" hidden></div>
+    </div>
+
+    <div class="findbar" id="findBar" hidden>
+      <span class="find-lbl">Найти:</span>
+      <input id="findInput" type="text" placeholder="что искать…">
+      <button id="findCase" class="btn-mini" title="Учитывать регистр">Аа</button>
+      <span class="find-count" id="findCount"></span>
+      <button id="findPrev" class="btn-mini" title="Предыдущее (Shift+Enter)">↑</button>
+      <button id="findNext" class="btn-mini" title="Следующее (Enter)">↓</button>
+      <span class="find-sep"></span>
+      <span class="find-lbl">Заменить на:</span>
+      <input id="replInput" type="text" placeholder="чем заменить (Ctrl+H)…">
+      <button id="replOne" class="btn-mini" title="Заменить текущее совпадение и перейти к следующему">Заменить</button>
+      <button id="replAll" class="btn-mini" title="Заменить все совпадения (отменяется одним Ctrl+Z)">Заменить всё</button>
+      <span class="find-sep"></span>
+      <span class="find-target" id="findTarget" title="Поиск идёт в окне, где последним был курсор; кликните в другое окно — поиск перейдёт туда"></span>
+      <span class="spacer"></span>
+      <button id="findClose" class="btn-mini" title="Закрыть (Esc)">×</button>
     </div>
 
     <div class="panes" id="panes" hidden></div>
@@ -718,6 +771,11 @@ const els = {
   filter: $("filter"), list: $("blockList"),
   progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
   head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"), splitBtn: $("splitBtn"),
+  mdTools: $("mdTools"),
+  findBar: $("findBar"), findInput: $("findInput"), findCase: $("findCase"),
+  findCount: $("findCount"), findTarget: $("findTarget"), findPrev: $("findPrev"),
+  findNext: $("findNext"), replInput: $("replInput"), replOne: $("replOne"),
+  replAll: $("replAll"), findClose: $("findClose"),
   statusBar: $("statusBar"), dirty: $("dirty"),
   unsavedPop: $("unsavedPop"), saveAllBtn: $("saveAllBtn"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
@@ -924,6 +982,7 @@ async function useRoot(handle){
   els.rootName.innerHTML = "Папка: <code>" + esc(handle.name) + "</code>";
   els.reopenBtn.hidden = true;
   els.newBlockBtn.hidden = false;
+  els.mdTools.hidden = false;
 
   await scan();
 }
@@ -1256,7 +1315,29 @@ function makeStart(slot){
   slot.body.appendChild(box);
 }
 
-function markHTML(t){ return esc(t).replace(MARKER_RE(), m => `<mark>${m}</mark>`); }
+// разметить кусок текста подложки: маркеры ==?…== и совпадения поиска
+// (ranges — диапазоны {s, e, cur} относительно t). Текст режется по всем
+// границам на элементарные отрезки — вложенность спанов всегда корректна.
+function markHTML(t, ranges){
+  const marks = [];
+  let m; const re = MARKER_RE();
+  while((m = re.exec(t))) marks.push({ s: m.index, e: m.index + m[0].length, mark: true });
+  if(ranges) marks.push(...ranges);
+  if(!marks.length) return esc(t);
+  const cuts = new Set([0, t.length]);
+  for(const r of marks){ cuts.add(r.s); cuts.add(r.e); }
+  const pts = [...cuts].sort((a, b) => a - b);
+  let html = "";
+  for(let i = 0; i + 1 < pts.length; i++){
+    const a = pts[i], b = pts[i + 1];
+    let seg = esc(t.slice(a, b));
+    const f = marks.find(r => !r.mark && r.s <= a && b <= r.e);
+    if(f) seg = `<span class="bd-find${f.cur ? " bd-find-cur" : ""}">${seg}</span>`;
+    if(marks.some(r => r.mark && r.s <= a && b <= r.e)) seg = `<mark>${seg}</mark>`;
+    html += seg;
+  }
+  return html;
+}
 
 // Подложка собирается поблочно одним слоем: строка-заголовок получает фон+полосу
 // (.bd-head), активный сектор — подсветку (.sec-active), маркеры ==?…== — жёлтый.
@@ -1265,10 +1346,11 @@ function updateBackdrop(slot){
   if(!slot.backdrop || !slot.editor) return;
   const text = slot.editor.value;
   const blocks = parseBlocks(text);
+  const fr = findRangesFor(slot);   // совпадения поиска, если это окно — цель Ctrl+F
   let html = "", cursor = 0;
   for(const b of blocks){
-    if(b.start > cursor) html += markHTML(text.slice(cursor, b.start));   // межблочные \n
-    let inner = markHTML(text.slice(b.start, b.end));
+    if(b.start > cursor) html += markHTML(text.slice(cursor, b.start), sliceRanges(fr, cursor, b.start));   // межблочные \n
+    let inner = markHTML(text.slice(b.start, b.end), sliceRanges(fr, b.start, b.end));
     if(b.type === "comment")
       inner = `<span class="bd-comment">${inner}</span>`;          // бледная служебная строка
     else if(b.type === "sector" && b.kind === "heading")
@@ -1278,7 +1360,7 @@ function updateBackdrop(slot){
     html += inner;
     cursor = b.end;
   }
-  if(cursor < text.length) html += markHTML(text.slice(cursor));
+  if(cursor < text.length) html += markHTML(text.slice(cursor), sliceRanges(fr, cursor, text.length));
   if(text.endsWith("\n")) html += " ";
   slot.backdrop.innerHTML = html;
   slot.backdrop.scrollTop = slot.editor.scrollTop;
@@ -1570,6 +1652,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   for(const s of slots) if(s.reqBtn) reflectSlotRequest(s);
 
   refreshFootnotes(true);   // окна сносок — содержимым ведомого окна
+  recomputeFind(false);     // поиск — под содержимое нового раздела
 }
 
 function renderStatusBar(status){
@@ -2375,6 +2458,245 @@ function saveFocused(){
   if(state.transSlot && state.transSlot.fileHandle) saveTranslation();
 }
 
+/* ===================== поиск и замена (Ctrl+F) =====================
+   Поиск работает в «целевом» окне — том, где последним был курсор;
+   клик в другое окно переводит поиск туда. Подсветка — через подложку. */
+
+const find = { targetKey: null, cur: 0, caseSens: false };
+
+function findActive(){ return !els.findBar.hidden; }
+function findTargetSlot(){
+  return state.slots.find(s => s.editor && slotKeyOf(s) === find.targetKey) || null;
+}
+// все начала совпадений запроса в тексте
+function findMatches(text, q, caseSens){
+  const out = [];
+  if(!q) return out;
+  const hay = caseSens ? text : text.toLowerCase();
+  const needle = caseSens ? q : q.toLowerCase();
+  let i = 0;
+  while((i = hay.indexOf(needle, i)) >= 0){ out.push(i); i += needle.length; }
+  return out;
+}
+// абсолютные диапазоны совпадений для подложки окна (null — окно не цель поиска)
+function findRangesFor(slot){
+  if(!findActive() || slotKeyOf(slot) !== find.targetKey) return null;
+  const q = els.findInput.value;
+  const starts = findMatches(slot.editor.value, q, find.caseSens);
+  if(!starts.length) return null;
+  const cur = Math.min(find.cur, starts.length - 1);
+  return starts.map((s, i) => ({ s, e: s + q.length, cur: i === cur }));
+}
+// обрезать абсолютные диапазоны под кусок [from, to) и сдвинуть к его началу
+function sliceRanges(ranges, from, to){
+  if(!ranges) return null;
+  const out = [];
+  for(const r of ranges){
+    const s = Math.max(r.s, from), e = Math.min(r.e, to);
+    if(s < e) out.push({ s: s - from, e: e - from, cur: r.cur });
+  }
+  return out.length ? out : null;
+}
+
+function openFind(focusReplace){
+  const ae = document.activeElement;
+  const s = state.slots.find(x => x.editor === ae) || fnFollowSlot();
+  if(s) find.targetKey = slotKeyOf(s);
+  // выделенный в редакторе текст — сразу в строку поиска
+  if(s && s.editor && s.editor.selectionStart < s.editor.selectionEnd)
+    els.findInput.value = s.editor.value.slice(s.editor.selectionStart, s.editor.selectionEnd);
+  els.findBar.hidden = false;
+  const inp = focusReplace ? els.replInput : els.findInput;
+  inp.focus(); inp.select();
+  recomputeFind(false);
+}
+function closeFind(){
+  els.findBar.hidden = true;
+  const t = findTargetSlot();
+  if(t){ updateBackdrop(t); t.editor.focus(); }
+}
+// пересчитать совпадения, счётчик и подсветку; scroll — докрутить окно до текущего
+function recomputeFind(scroll){
+  if(!findActive()) return;
+  const t = findTargetSlot();
+  els.findTarget.textContent = t ? "в окне: " + slotKeyName(find.targetKey) : "нет окна";
+  const q = els.findInput.value;
+  const starts = t ? findMatches(t.editor.value, q, find.caseSens) : [];
+  if(find.cur >= starts.length) find.cur = Math.max(0, starts.length - 1);
+  els.findCount.textContent = q ? `${starts.length ? find.cur + 1 : 0} из ${starts.length}` : "";
+  if(t) updateBackdrop(t);
+  if(scroll && t && starts.length) scrollToMatch(t, starts[find.cur]);
+}
+function scrollToMatch(slot, pos){
+  const top = caretTopInBackdrop(slot.backdrop, pos);
+  if(top == null) return;
+  const view = slot.editor.clientHeight;
+  if(top < slot.editor.scrollTop + 20 || top > slot.editor.scrollTop + view - 50)
+    slot.editor.scrollTo({ top: Math.max(0, top - view / 3), behavior: "smooth" });
+}
+function findStep(dir){
+  const t = findTargetSlot(); if(!t) return;
+  const starts = findMatches(t.editor.value, els.findInput.value, find.caseSens);
+  if(!starts.length) return;
+  find.cur = (Math.min(find.cur, starts.length - 1) + dir + starts.length) % starts.length;
+  recomputeFind(true);
+}
+// вставка в позицию выделения с сохранением родной отмены (Ctrl+Z)
+function insertAtSelection(ed, text){
+  if(text === "" && ed.selectionStart === ed.selectionEnd) return;
+  const ok = text === ""
+    ? document.execCommand("delete")
+    : document.execCommand("insertText", false, text);
+  if(!ok){   // фолбэк, если execCommand не сработал (отмена этой правки потеряется)
+    ed.setRangeText(text, ed.selectionStart, ed.selectionEnd, "end");
+    ed.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+}
+function replaceCurrent(){
+  const t = findTargetSlot(), q = els.findInput.value;
+  if(!t || !q) return;
+  const starts = findMatches(t.editor.value, q, find.caseSens);
+  if(!starts.length){ toast("Совпадений нет", true); return; }
+  const cur = Math.min(find.cur, starts.length - 1);
+  t.editor.focus();
+  t.editor.setSelectionRange(starts[cur], starts[cur] + q.length);
+  insertAtSelection(t.editor, els.replInput.value);
+  find.cur = cur;          // следующее совпадение встаёт на тот же номер
+  els.replInput.focus();
+  recomputeFind(true);
+}
+function replaceAllMatches(){
+  const t = findTargetSlot(), q = els.findInput.value;
+  if(!t || !q) return;
+  const ed = t.editor;
+  const starts = findMatches(ed.value, q, find.caseSens);
+  if(!starts.length){ toast("Совпадений нет", true); return; }
+  const r = els.replInput.value;
+  let out = "", prev = 0;
+  for(const s of starts){ out += ed.value.slice(prev, s) + r; prev = s + q.length; }
+  out += ed.value.slice(prev);
+  const keepTop = ed.scrollTop;
+  ed.focus(); ed.select();
+  insertAtSelection(ed, out);   // одной операцией — одна отмена
+  ed.scrollTop = keepTop;
+  els.replInput.focus();
+  find.cur = 0;
+  recomputeFind(false);
+  toast("Заменено: " + starts.length);
+}
+
+els.findInput.addEventListener("input", () => {
+  const t = findTargetSlot();
+  if(t){   // начинаем с совпадения после курсора в целевом окне
+    const starts = findMatches(t.editor.value, els.findInput.value, find.caseSens);
+    const i = starts.findIndex(s => s >= t.editor.selectionStart);
+    find.cur = i < 0 ? 0 : i;
+  }
+  recomputeFind(true);
+});
+function findEnter(e){
+  if(e.key !== "Enter") return;
+  e.preventDefault();
+  if(e.target === els.replInput) replaceCurrent();
+  else findStep(e.shiftKey ? -1 : 1);
+}
+els.findInput.addEventListener("keydown", findEnter);
+els.replInput.addEventListener("keydown", findEnter);
+els.findPrev.addEventListener("click", () => findStep(-1));
+els.findNext.addEventListener("click", () => findStep(1));
+els.replOne.addEventListener("click", replaceCurrent);
+els.replAll.addEventListener("click", replaceAllMatches);
+els.findClose.addEventListener("click", closeFind);
+els.findCase.addEventListener("click", () => {
+  find.caseSens = !find.caseSens;
+  els.findCase.classList.toggle("active", find.caseSens);
+  recomputeFind(true);
+});
+// поиск следует за курсором: фокус в другом окне переводит цель туда
+els.panes.addEventListener("focusin", (e) => {
+  if(!findActive()) return;
+  const s = state.slots.find(x => x.editor === e.target);
+  if(!s || slotKeyOf(s) === find.targetKey) return;
+  const old = findTargetSlot();
+  find.targetKey = slotKeyOf(s); find.cur = 0;
+  if(old) updateBackdrop(old);
+  recomputeFind(false);
+});
+// правка текста меняет совпадения — обновить счётчик и подсветку
+els.panes.addEventListener("input", (e) => {
+  if(findActive() && e.target.tagName === "TEXTAREA") recomputeFind(false);
+});
+
+/* ===================== вставка разметки (панель и Ctrl+B/I/U) ===================== */
+
+function focusedEditorSlot(){
+  const ae = document.activeElement;
+  return state.slots.find(s => s.editor === ae) || null;
+}
+const MD_WRAPS = {
+  bold:     ["**", "**"],
+  italic:   ["*", "*"],
+  u:        ["<u>", "</u>"],
+  question: ["==?", "=="],
+};
+function applyMdAction(kind){
+  const s = focusedEditorSlot();
+  if(!s){ toast("Поставьте курсор в текст — вставка идёт в место курсора", true); return; }
+  if(kind === "footnote"){ insertFootnote(s); return; }
+  const [pre, post] = MD_WRAPS[kind];
+  const ed = s.editor;
+  const a = ed.selectionStart, b = ed.selectionEnd;
+  const sel = ed.value.slice(a, b);
+  insertAtSelection(ed, pre + sel + post);
+  if(sel) ed.setSelectionRange(a + pre.length, b + pre.length);   // выделение остаётся на тексте
+  else ed.setSelectionRange(a + pre.length, a + pre.length);      // курсор между скобками
+}
+// свободный числовой id сноски: максимум из [^N] в тексте + 1
+function nextFootnoteId(text){
+  let max = 0, m; const re = /\[\^(\d+)\]/g;
+  while((m = re.exec(text))) max = Math.max(max, parseInt(m[1], 10));
+  return String(max + 1);
+}
+// вставить ссылку [^N] в место курсора и заготовку определения в конец текста;
+// если открыто окно сносок, следящее за этим окном, — курсор сразу в определение
+function insertFootnote(slot){
+  if(slot.role === "footnotes"){
+    toast("Поставьте курсор в текст (оригинал, перевод или вариант) — сноска вставляется туда", true);
+    return;
+  }
+  const ed = slot.editor;
+  const id = nextFootnoteId(ed.value);
+  const ref = `[^${id}]`;
+  const refEnd = ed.selectionEnd + ref.length;
+  const keepTop = ed.scrollTop;
+  ed.setSelectionRange(ed.selectionEnd, ed.selectionEnd);
+  insertAtSelection(ed, ref);
+  const v = ed.value;
+  const sep = v === "" || v.endsWith("\n\n") ? "" : v.endsWith("\n") ? "\n" : "\n\n";
+  ed.setSelectionRange(v.length, v.length);
+  insertAtSelection(ed, `${sep}${ref}: `);
+  const fn = state.slots.find(x => x.role === "footnotes" && x.editor && fnFollowSlot() === slot);
+  if(fn){
+    // текст остаётся на месте, определение набирается в окне сносок
+    ed.setSelectionRange(refEnd, refEnd); ed.scrollTop = keepTop;
+    syncActiveFromEditor(slot);
+    const i = fn.editor.value.indexOf(ref + ": ");
+    const p = i >= 0 ? i + ref.length + 2 : fn.editor.value.length;
+    fn.editor.focus(); fn.editor.setSelectionRange(p, p);
+    const top = caretTopInBackdrop(fn.backdrop, Math.max(0, p - 1));
+    if(top != null){ fn.editor.scrollTop = Math.max(0, top - 40); fn.backdrop.scrollTop = fn.editor.scrollTop; }
+  } else {
+    toast(`Сноска ${ref} добавлена, заготовка определения — в конце текста`);
+  }
+}
+els.mdTools.addEventListener("mousedown", (e) => {
+  if(e.target.closest("button")) e.preventDefault();   // не забирать фокус у редактора
+});
+els.mdTools.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-md]");
+  if(btn) applyMdAction(btn.dataset.md);
+});
+
 /* ===================== операции с раскладкой ===================== */
 
 function addSlot(spec){
@@ -2655,11 +2977,24 @@ document.addEventListener("click", (e) => {
 function anyModalOpen(){ return !els.modal.hidden || !els.settingsModal.hidden || !els.reqModal.hidden; }
 
 document.addEventListener("keydown", (e) => {
-  if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
+  // горячие клавиши — по физической клавише (e.code), иначе в русской
+  // раскладке Ctrl+F даёт e.key «а», Ctrl+H — «р», и перехват не срабатывает
+  const mod = e.ctrlKey || e.metaKey;
+  const key = (c) => e.code === "Key" + c || e.key.toLowerCase() === c.toLowerCase();
+  if(mod && key("S")){
     e.preventDefault();
     if(!anyModalOpen()) saveFocused();   // в модалках Ctrl+S не трогает файлы
   }
+  if(mod && (key("F") || key("H")) && !anyModalOpen() && state.current){
+    e.preventDefault();
+    openFind(key("H"));   // Ctrl+H — сразу к замене
+  }
+  if(mod && !e.altKey && (key("B") || key("I") || key("U")) && focusedEditorSlot()){
+    e.preventDefault();   // Ctrl+U иначе открывает исходник страницы
+    applyMdAction(key("B") ? "bold" : key("I") ? "italic" : "u");
+  }
   if(e.key === "Escape"){
+    if(!els.findBar.hidden) closeFind();
     if(!els.unsavedPop.hidden) els.unsavedPop.hidden = true;
     if(!els.pop.hidden) closePop();
     if(!els.modal.hidden) closeNewBlock();
