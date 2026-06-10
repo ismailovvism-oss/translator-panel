@@ -456,6 +456,7 @@
 <div class="topbar">
   <button id="sideToggle" class="btn" title="Свернуть/показать список блоков">☰</button>
   <button id="openBtn" class="btn primary">Открыть папку</button>
+  <button id="ghOpenBtn" class="btn" title="Открыть репозиторий перевода на GitHub — работает по ссылке и на телефоне">Открыть с GitHub</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <span class="spacer"></span>
@@ -544,7 +545,9 @@
     <div class="panes" id="panes" hidden></div>
 
     <div class="empty-state" id="emptyState">
-      Откройте корневую папку репозитория перевода —<br>в ней должны лежать <code style="font-family:var(--ui)">source/</code> и <code style="font-family:var(--ui)">translation/</code>.
+      Откройте перевод: локальную папку («Открыть папку», нужен Chrome/Edge на десктопе)<br>
+      или репозиторий на GitHub («Открыть с GitHub», работает и на телефоне).<br>
+      Внутри должны лежать <code style="font-family:var(--ui)">source/</code> и <code style="font-family:var(--ui)">translation/</code>.
     </div>
   </section>
 </div>
@@ -565,6 +568,30 @@
     <div class="modal-actions">
       <button id="nbCancel" class="btn">Отмена</button>
       <button id="nbCreate" class="btn primary">Создать</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="ghModal" hidden>
+  <div class="modal-box">
+    <h3>Открыть репозиторий на GitHub</h3>
+    <label>Репозиторий (owner/repo или ссылка)
+      <input id="ghRepo" type="text" placeholder="username/my-translation" autocomplete="off">
+    </label>
+    <label>Ветка
+      <input id="ghBranch" type="text" placeholder="пусто — основная ветка репозитория" autocomplete="off">
+    </label>
+    <label>Токен доступа
+      <input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off">
+      <span class="hint">Создаётся на github.com: Settings → Developer settings → Fine-grained
+      tokens; выберите только нужный репозиторий и дайте право Contents: Read and write.
+      Токен хранится только в вашем браузере и никуда, кроме GitHub, не отправляется.</span>
+    </label>
+    <span class="hint">Каждое сохранение станет коммитом в выбранную ветку. Структура та же:
+    папки source/, translation/, variants/ в корне репозитория.</span>
+    <div class="modal-actions">
+      <button id="ghCancel" class="btn">Отмена</button>
+      <button id="ghConnect" class="btn primary">Подключить</button>
     </div>
   </div>
 </div>
@@ -642,6 +669,9 @@ const LAYOUT_KEY = "vychitka-layout";
 const SIDE_W_KEY = "vychitka-side-w";
 const SIDE_COLLAPSE_KEY = "vychitka-side-collapsed";
 const HEADS_HIDDEN_KEY = "vychitka-heads-hidden";   // режим чтения: служебные шапки окон скрыты
+const GH_TOKEN_KEY = "vychitka-gh-token";   // токен GitHub — только в браузере пользователя
+const GH_REPO_KEY  = "vychitka-gh-repo";    // {owner, repo, branch} последнего подключения
+const LAST_MODE_KEY = "vychitka-last-mode"; // "local" | "github" — что переоткрывать при запуске
 
 /* ---- API-режим (OpenRouter) ---- */
 const API_KEY_KEY  = "vychitka-api-key";
@@ -735,8 +765,8 @@ function rulesetByName(name){ return name ? getRulesets().find(r => r.name === n
 
 /* ---- состояние ---- */
 const state = {
-  rootHandle: null,
-  dirs: { source: null, translation: null, variants: null },
+  rootHandle: null,  // корневая папка локального режима (для переоткрытия)
+  fs: null,          // адаптер хранилища: локальная папка или GitHub (см. localAdapter/githubAdapter)
   blocks: [],        // [{label, title, status, srcHandle, trHandle}]
   current: null,     // активный блок
   layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
@@ -757,6 +787,8 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
+  ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
+  ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
   headsToggle: $("headsToggle"),
   modelsList: $("modelsList"),
@@ -861,7 +893,11 @@ function buildTranslation(fmLines, body){
   return `---\n${fm.join("\n")}\n---\n\n${body.replace(/^\n+/, "")}`;
 }
 
-/* ===================== доступ к файлам ===================== */
+/* ===================== доступ к файлам =====================
+   Всё чтение/запись идёт через тонкий адаптер state.fs; их два: локальная
+   папка (File System Access API) и репозиторий GitHub (Contents API,
+   сохранение = коммит). «handle» — непрозрачный токен своего адаптера:
+   у локального это FileSystemFileHandle, у GitHub — {path, sha}. */
 
 async function ensurePermission(handle, mode){
   const opts = { mode };
@@ -869,23 +905,138 @@ async function ensurePermission(handle, mode){
   if((await handle.requestPermission(opts)) === "granted") return true;
   return false;
 }
-async function readFile(handle){
-  const f = await handle.getFile();
-  return await f.text();
+// единые точки чтения/записи — диспетчеризация в активный адаптер
+function readFile(h){ return state.fs.read(h); }
+function writeFile(h, content){ return state.fs.write(h, content); }
+function ensureWritable(){ return state.fs ? state.fs.ensureWrite() : Promise.resolve(false); }
+
+/* ---- адаптер: локальная папка ---- */
+function localAdapter(rootHandle, dirs){
+  return {
+    kind: "local",
+    title: "Папка: <code>" + esc(rootHandle.name) + "</code>",
+    async ensureWrite(){ return ensurePermission(rootHandle, "readwrite"); },
+    async list(dir){
+      const d = dirs[dir];
+      if(!d) return [];
+      const out = [];
+      for await (const [name, h] of d.entries())
+        if(h.kind === "file" && /\.md$/i.test(name)) out.push({ name, handle: h });
+      return out;
+    },
+    async read(h){ return (await h.getFile()).text(); },
+    async write(h, content){
+      const w = await h.createWritable();
+      await w.write(content);
+      await w.close();
+    },
+    async getFile(dir, name, create){
+      let d = dirs[dir];
+      if(!d && dir === "variants" && create)   // variants/ создаётся при первом сохранении
+        d = dirs.variants = await rootHandle.getDirectoryHandle("variants", { create: true });
+      if(!d) throw new Error("нет папки " + dir + "/");
+      return d.getFileHandle(name, { create: !!create });
+    },
+    async remove(dir, name){ if(dirs[dir]) await dirs[dir].removeEntry(name); },
+  };
 }
-async function writeFile(handle, content){
-  const w = await handle.createWritable();
-  await w.write(content);
-  await w.close();
+
+/* ---- адаптер: репозиторий GitHub ---- */
+// base64 для UTF-8 (btoa сам по себе не умеет кириллицу и арабский)
+function b64encodeUtf8(s){
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for(let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
-// папка variants/ — может отсутствовать; создаётся при первом сохранении варианта
-async function ensureVariantsDir(create){
-  if(state.dirs.variants) return state.dirs.variants;
+function b64decodeUtf8(b64){
+  const bin = atob(b64.replace(/\s/g, ""));
+  const bytes = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+async function ghFetch(token, method, url, body){
+  let r;
   try{
-    const d = await state.rootHandle.getDirectoryHandle("variants", { create: !!create });
-    state.dirs.variants = d;
-    return d;
-  }catch{ return null; }
+    r = await fetch(url, {
+      method,
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }catch(e){ throw new Error("нет связи с GitHub (" + e.message + ")"); }
+  if(!r.ok){
+    let msg = "GitHub: " + r.status;
+    try{ const j = await r.json(); if(j && j.message) msg += " — " + j.message; }catch{}
+    if(r.status === 401) msg = "токен GitHub не подошёл — проверьте его в «Открыть с GitHub»";
+    const e = new Error(msg); e.status = r.status; throw e;
+  }
+  return r.status === 204 ? null : r.json();
+}
+function githubAdapter(cfg){   // {owner, repo, branch, token}
+  const base = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}`;
+  const enc = (p) => p.split("/").map(encodeURIComponent).join("/");
+  const ref = "?ref=" + encodeURIComponent(cfg.branch);
+  const gh = (method, url, body) => ghFetch(cfg.token, method, url, body);
+  return {
+    kind: "github",
+    title: `GitHub: <code>${esc(cfg.owner + "/" + cfg.repo)}</code> · ${esc(cfg.branch)}`,
+    async ensureWrite(){ return !!cfg.token; },
+    async list(dir){
+      let arr;
+      try{ arr = await gh("GET", `${base}/contents/${enc(dir)}${ref}`); }
+      catch(e){ if(e.status === 404) return []; throw e; }   // нет папки = пусто
+      if(!Array.isArray(arr)) return [];
+      return arr
+        .filter(f => f.type === "file" && /\.md$/i.test(f.name))
+        .map(f => ({ name: f.name, handle: { path: f.path, sha: f.sha } }));
+    },
+    async read(h){
+      const j = await gh("GET", `${base}/contents/${enc(h.path)}${ref}`);
+      h.sha = j.sha;
+      if(j.encoding === "base64" && typeof j.content === "string") return b64decodeUtf8(j.content);
+      // большой файл — content не отдан, забираем blob по sha
+      const blob = await gh("GET", `${base}/git/blobs/${j.sha}`);
+      return b64decodeUtf8(blob.content);
+    },
+    async write(h, content){
+      const body = {
+        message: "Вычитка: " + h.path,
+        content: b64encodeUtf8(content),
+        branch: cfg.branch,
+      };
+      if(h.sha) body.sha = h.sha;
+      let j;
+      try{ j = await gh("PUT", `${base}/contents/${enc(h.path)}`, body); }
+      catch(e){
+        if(e.status === 409 || e.status === 422)
+          throw new Error("файл изменился на GitHub после открытия — переоткройте раздел и повторите правку (текст не записан, при необходимости скопируйте его)");
+        throw e;
+      }
+      h.sha = (j.content && j.content.sha) || null;
+    },
+    async getFile(dir, name, create){
+      const path = dir + "/" + name;
+      try{
+        const j = await gh("GET", `${base}/contents/${enc(path)}${ref}`);
+        return { path, sha: j.sha };
+      }catch(e){
+        if(e.status === 404 && create) return { path, sha: null };  // файл создаст первая запись
+        throw e;
+      }
+    },
+    async remove(dir, name){
+      const path = dir + "/" + name;
+      const j = await gh("GET", `${base}/contents/${enc(path)}${ref}`);
+      await gh("DELETE", `${base}/contents/${enc(path)}`, {
+        message: "Вычитка: удалён " + path, sha: j.sha, branch: cfg.branch,
+      });
+    },
+  };
 }
 
 /* ---- IndexedDB: запоминаем корневую папку, чтобы выбрать её один раз ---- */
@@ -927,6 +1078,7 @@ function normalizeSpec(s){
       collapsed,
     };
   }
+  if(s.role === "footnotes") return { role: "footnotes", collapsed };
   return null;
 }
 function loadLayout(){
@@ -960,6 +1112,15 @@ async function pickFolder(){
 }
 
 async function reopenFolder(){
+  // переоткрываем то хранилище, с которым работали в прошлый раз
+  if(localStorage.getItem(LAST_MODE_KEY) === "github"){
+    const cfg = ghSavedCfg();
+    if(cfg && getGhToken()){
+      try{ await connectGitHub(cfg.owner, cfg.repo, cfg.branch, getGhToken()); }
+      catch(e){ console.error(e); toast("Не удалось подключиться: " + e.message, true); }
+      return;
+    }
+  }
   const handle = await IDB.get("root");
   if(!handle){ toast("Нет сохранённой папки", true); return; }
   if(!(await ensurePermission(handle, "readwrite"))){
@@ -977,36 +1138,73 @@ async function useRoot(handle){
   catch{ toast("В папке нет подпапки translation/", true); return; }
   try{ varDir = await handle.getDirectoryHandle("variants"); }   // необязательна
   catch{ varDir = null; }
-  state.dirs = { source: src, translation: tr, variants: varDir };
+  state.fs = localAdapter(handle, { source: src, translation: tr, variants: varDir });
+  try{ localStorage.setItem(LAST_MODE_KEY, "local"); }catch{}
+  await storageReady();
+}
 
-  els.rootName.innerHTML = "Папка: <code>" + esc(handle.name) + "</code>";
+// общий хвост подключения хранилища (локального или GitHub)
+async function storageReady(){
+  els.rootName.innerHTML = state.fs.title;
   els.reopenBtn.hidden = true;
   els.newBlockBtn.hidden = false;
   els.mdTools.hidden = false;
-
   await scan();
+}
+
+/* ---- подключение GitHub ---- */
+function getGhToken(){ try{ return localStorage.getItem(GH_TOKEN_KEY) || ""; }catch{ return ""; } }
+function ghSavedCfg(){
+  try{
+    const c = JSON.parse(localStorage.getItem(GH_REPO_KEY) || "null");
+    if(c && c.owner && c.repo) return { owner: c.owner, repo: c.repo, branch: c.branch || "" };
+  }catch{}
+  return null;
+}
+function openGhModal(){
+  const cfg = ghSavedCfg();
+  els.ghRepo.value = cfg ? cfg.owner + "/" + cfg.repo : "";
+  els.ghBranch.value = cfg ? cfg.branch : "";
+  els.ghToken.value = getGhToken();
+  els.ghModal.hidden = false;
+  (els.ghRepo.value ? els.ghToken : els.ghRepo).focus();
+}
+function closeGhModal(){ els.ghModal.hidden = true; }
+
+async function connectGitHub(owner, repo, branch, token){
+  // проверяем доступ и узнаём основную ветку одним запросом
+  const info = await ghFetch(token, "GET", `https://api.github.com/repos/${owner}/${repo}`);
+  state.fs = githubAdapter({ owner, repo, branch: branch || info.default_branch || "main", token });
+  state.rootHandle = null;
+  try{
+    localStorage.setItem(LAST_MODE_KEY, "github");
+    localStorage.setItem(GH_REPO_KEY, JSON.stringify({ owner, repo, branch: branch || "" }));
+    localStorage.setItem(GH_TOKEN_KEY, token);
+  }catch{}
+  await storageReady();
+  if(!state.blocks.length)
+    toast("В репозитории не видно блоков — проверьте, что в нём есть папки source/ и translation/ с .md-файлами", true);
 }
 
 async function scan(){
   // источники по метке (имя файла без .md)
   const sources = new Map();   // label -> handle
-  for await (const [name, h] of state.dirs.source.entries()){
-    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
-    sources.set(labelOf(name), h);
-  }
-  // переводы: метка из имени, заголовок и статус — из фронтматтера
+  for(const f of await state.fs.list("source")) sources.set(labelOf(f.name), f.handle);
+
+  // переводы: метка из имени, заголовок и статус — из фронтматтера.
+  // Читаем параллельно: для GitHub каждый файл — отдельный сетевой запрос
   const trans = new Map();     // label -> {handle, title, status}
-  for await (const [name, h] of state.dirs.translation.entries()){
-    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
+  const trFiles = await state.fs.list("translation");
+  await Promise.all(trFiles.map(async (f) => {
     let status = "todo", title = "";
     try{
-      const { fmLines } = splitFrontmatter(await readFile(h));
+      const { fmLines } = splitFrontmatter(await readFile(f.handle));
       const s = fmGet(fmLines, "status");
       if(STATUSES.includes(s)) status = s;
       title = fmGet(fmLines, "title") || "";
     }catch{}
-    trans.set(labelOf(name), { handle: h, title, status });
-  }
+    trans.set(labelOf(f.name), { handle: f.handle, title, status });
+  }));
 
   // объединяем по метке
   const labels = new Set([...sources.keys(), ...trans.keys()]);
@@ -1571,12 +1769,10 @@ async function loadSlotFromDisk(slot, b){
     }
   } else { // variant
     let text = "", h = null;
-    const dir = state.dirs.variants;
-    if(dir){
-      const name = `${b.label} ${slot.label}.md`;
-      try{ h = await dir.getFileHandle(name); text = normNL(await readFile(h)); }
-      catch{ h = null; text = ""; }
-    }
+    try{
+      h = await state.fs.getFile("variants", `${b.label} ${slot.label}.md`, false);
+      text = normNL(await readFile(h));
+    }catch{ h = null; text = ""; }
     slot.fileHandle = h; slot.savedText = text;
     makeEditor(slot, text); applyDraftIfAny(slot, b);
   }
@@ -1754,7 +1950,7 @@ function hasLiveMarker(text){ return MARKER_RE().test(text); }
 async function saveTranslation(slot){
   const ts = slot || state.transSlot;
   if(!ts || !ts.fileHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   const body = ts.editor.value;
   try{
     await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, body));
@@ -1766,13 +1962,11 @@ async function saveTranslation(slot){
 async function saveVariant(slot){
   const b = state.current;
   if(!b || !slot) return;
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   try{
     let h = slot.fileHandle;
     if(!h){
-      const dir = await ensureVariantsDir(true);
-      if(!dir){ toast("Не удалось создать папку variants/", true); return; }
-      h = await dir.getFileHandle(`${b.label} ${slot.label}.md`, { create: true });
+      h = await state.fs.getFile("variants", `${b.label} ${slot.label}.md`, true);
       slot.fileHandle = h;
     }
     await writeFile(h, slot.editor.value);
@@ -1784,11 +1978,11 @@ async function saveVariant(slot){
 async function saveSource(slot){
   const b = state.current;
   if(!b || !slot) return;
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   try{
     let h = slot.fileHandle;
     if(!h){
-      h = await state.dirs.source.getFileHandle(`${b.label}.md`, { create: true });
+      h = await state.fs.getFile("source", `${b.label}.md`, true);
       slot.fileHandle = h; b.srcHandle = h;
     }
     await writeFile(h, slot.editor.value);   // оригинал без фронтматтера — тело как есть
@@ -1807,10 +2001,10 @@ async function saveDraftByKey(key){
   const sk = key.slice(label.length + 1);
   const body = state.drafts.get(key);
   if(sk === "source"){
-    const h = await state.dirs.source.getFileHandle(`${label}.md`, { create: true });
+    const h = await state.fs.getFile("source", `${label}.md`, true);
     await writeFile(h, body);   // оригинал без фронтматтера — тело как есть
   } else if(sk === "translation"){
-    const h = await state.dirs.translation.getFileHandle(`${label}.md`, { create: true });
+    const h = await state.fs.getFile("translation", `${label}.md`, true);
     // фронтматтер читаем свежим из файла — черновик хранит только тело
     let fmLines = ["title: ", "status: todo", "glossary_checked: false"];
     try{
@@ -1824,9 +2018,7 @@ async function saveDraftByKey(key){
       renderCounts(); renderList();
     }
   } else if(sk.startsWith("variant|")){
-    const dir = await ensureVariantsDir(true);
-    if(!dir) throw new Error("не удалось создать папку variants/");
-    const h = await dir.getFileHandle(`${label} ${sk.slice("variant|".length)}.md`, { create: true });
+    const h = await state.fs.getFile("variants", `${label} ${sk.slice("variant|".length)}.md`, true);
     await writeFile(h, body);
   } else throw new Error("неизвестное окно");
   state.drafts.delete(key);
@@ -1835,7 +2027,7 @@ async function saveDraftByKey(key){
 
 // сохранить всё несохранённое: живые окна текущего раздела + черновики остальных
 async function saveAll(){
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   let saved = 0; const failed = [];
   if(state.current){
     for(const s of state.slots){
@@ -1864,9 +2056,9 @@ async function startTranslation(){
   const raw = prompt("Заголовок перевода (можно оставить пустым):", "");
   if(raw === null) return;                    // отмена
   const title = raw.trim();
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   try{
-    const handle = await state.dirs.translation.getFileHandle(`${b.label}.md`, { create: true });
+    const handle = await state.fs.getFile("translation", `${b.label}.md`, true);
     const content = buildTranslation(["title: " + title, "status: todo", "glossary_checked: false"], "");
     await writeFile(handle, content);
     b.trHandle = handle; b.title = title; b.status = "todo";
@@ -1885,7 +2077,7 @@ async function saveTitle(){
   if(!b || !b.trHandle) return;
   const newTitle = els.bhTitle.value.trim();
   if(newTitle === (b.title || "")) return;
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   const ts = state.transSlot;
   try{
     let fmLines, body;
@@ -1906,15 +2098,12 @@ async function saveTitle(){
 
 // собрать файлы-варианты, относящиеся к блоку (метка — самый длинный префикс)
 async function variantFilesOf(label){
-  const dir = state.dirs.variants;
   const out = [];
-  if(!dir) return out;
   const labels = state.blocks.map(b => b.label);
-  for await (const [name, h] of dir.entries()){
-    if(h.kind !== "file" || !/\.md$/i.test(name)) continue;
-    const base = name.replace(/\.md$/i, "");
+  for(const f of await state.fs.list("variants")){
+    const base = f.name.replace(/\.md$/i, "");
     if(ownerLabel(base, labels) === label)
-      out.push({ name, handle: h, yarlik: base.slice(label.length).replace(/^\s+/, "") });
+      out.push({ name: f.name, handle: f.handle, yarlik: base.slice(label.length).replace(/^\s+/, "") });
   }
   return out;
 }
@@ -1922,11 +2111,11 @@ async function variantFilesOf(label){
 // безопасно переименовать файл: записать новый, проверить, удалить старый
 async function renameFile(dir, oldName, newName){
   if(oldName === newName) return;
-  const content = await readFile(await dir.getFileHandle(oldName));
-  const newH = await dir.getFileHandle(newName, { create: true });
+  const content = await readFile(await state.fs.getFile(dir, oldName, false));
+  const newH = await state.fs.getFile(dir, newName, true);
   await writeFile(newH, content);
   if((await readFile(newH)) !== content) throw new Error("проверка после записи не прошла: " + newName);
-  await dir.removeEntry(oldName);
+  await state.fs.remove(dir, oldName);
 }
 
 // переименовать блок = сменить метку: согласованно переименовать всю группу файлов
@@ -1940,13 +2129,13 @@ async function renameBlock(b){
   if(err){ toast(err, true); return; }
   if(nl === b.label) return;
   if(!confirm(`Переименовать блок «${b.label}» → «${nl}»?\nЭто меняет идентификатор и порядок в списке.`)) return;
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   try{
     const vfiles = await variantFilesOf(b.label);   // до переименований, по старой метке
-    if(b.srcHandle) await renameFile(state.dirs.source, `${b.label}.md`, `${nl}.md`);
-    if(b.trHandle)  await renameFile(state.dirs.translation, `${b.label}.md`, `${nl}.md`);
+    if(b.srcHandle) await renameFile("source", `${b.label}.md`, `${nl}.md`);
+    if(b.trHandle)  await renameFile("translation", `${b.label}.md`, `${nl}.md`);
     for(const v of vfiles)
-      await renameFile(state.dirs.variants, v.name, v.yarlik ? `${nl} ${v.yarlik}.md` : `${nl}.md`);
+      await renameFile("variants", v.name, v.yarlik ? `${nl} ${v.yarlik}.md` : `${nl}.md`);
     await scan();
     const nb = state.blocks.find(x => x.label === nl);
     state.current = null;                 // чтобы openBlock не спрашивал про «несохранённое»
@@ -2020,7 +2209,7 @@ async function splitBlock(b){
     toast("Активный сектор — первый в оригинале; перед ним нет текста для исходного раздела", true); return;
   }
   if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом деление раздела", true); return; }
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
 
   // читаем свежими с диска (файлы мог менять git/другой инструмент)
   let origText;
@@ -2054,10 +2243,10 @@ async function splitBlock(b){
 
   try{
     // 1) сперва создаём новый раздел и убеждаемся, что записалось
-    const newSrc = await state.dirs.source.getFileHandle(`${newLabel}.md`, { create: true });
+    const newSrc = await state.fs.getFile("source", `${newLabel}.md`, true);
     await writeFile(newSrc, origSecond);
     if((await readFile(newSrc)) !== origSecond) throw new Error("проверка нового оригинала не прошла");
-    const newTr = await state.dirs.translation.getFileHandle(`${newLabel}.md`, { create: true });
+    const newTr = await state.fs.getFile("translation", `${newLabel}.md`, true);
     await writeFile(newTr, newTrContent);
     if((await readFile(newTr)) !== newTrContent) throw new Error("проверка нового перевода не прошла");
 
@@ -2079,11 +2268,11 @@ async function splitBlock(b){
 
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
 async function createBlock(label, title, sourceText){
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return false; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return false; }
   try{
-    const sH = await state.dirs.source.getFileHandle(`${label}.md`, { create: true });
+    const sH = await state.fs.getFile("source", `${label}.md`, true);
     await writeFile(sH, sourceText);
-    const tH = await state.dirs.translation.getFileHandle(`${label}.md`, { create: true });
+    const tH = await state.fs.getFile("translation", `${label}.md`, true);
     await writeFile(tH, buildTranslation(["title: " + title, "status: todo", "glossary_checked: false"], ""));
     await scan();
     const nb = state.blocks.find(b => b.label === label);
@@ -2431,7 +2620,7 @@ async function setStatus(newStatus){
   b.status = newStatus;
   renderStatusBar(newStatus);
 
-  if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   try{
     await writeFile(ts.fileHandle, buildTranslation(ts.fmLines, ts.editor.value));
     ts.savedText = ts.editor.value; clearDraft(ts); updateDirtyUI();
@@ -2786,6 +2975,21 @@ els.headsToggle.addEventListener("click", () => {
 
 els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
+els.ghOpenBtn.addEventListener("click", openGhModal);
+els.ghCancel.addEventListener("click", closeGhModal);
+els.ghModal.addEventListener("click", (e) => { if(e.target === els.ghModal) closeGhModal(); });
+els.ghConnect.addEventListener("click", async () => {
+  const m = els.ghRepo.value.trim().match(/(?:github\.com[/:])?([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/);
+  if(!m){ toast("Укажите репозиторий как owner/repo (или ссылкой на него)", true); els.ghRepo.focus(); return; }
+  const token = els.ghToken.value.trim();
+  if(!token){ toast("Нужен токен доступа — подсказка под полем", true); els.ghToken.focus(); return; }
+  els.ghConnect.disabled = true; els.ghConnect.textContent = "Подключение…";
+  try{
+    await connectGitHub(m[1], m[2], els.ghBranch.value.trim(), token);
+    closeGhModal();
+  }catch(e){ console.error(e); toast("Не удалось подключиться: " + e.message, true); }
+  finally{ els.ghConnect.disabled = false; els.ghConnect.textContent = "Подключить"; }
+});
 els.filter.addEventListener("input", renderList);
 els.saveAllBtn.addEventListener("click", () => saveAll());
 els.dirty.addEventListener("click", () => {
@@ -2974,7 +3178,7 @@ document.addEventListener("click", (e) => {
   if(!els.pop.hidden && !els.pop.contains(e.target) && e.target !== els.addSlotBtn) closePop();
 });
 
-function anyModalOpen(){ return !els.modal.hidden || !els.settingsModal.hidden || !els.reqModal.hidden; }
+function anyModalOpen(){ return !els.modal.hidden || !els.settingsModal.hidden || !els.reqModal.hidden || !els.ghModal.hidden; }
 
 document.addEventListener("keydown", (e) => {
   // горячие клавиши — по физической клавише (e.code), иначе в русской
@@ -3000,6 +3204,7 @@ document.addEventListener("keydown", (e) => {
     if(!els.modal.hidden) closeNewBlock();
     if(!els.settingsModal.hidden) closeSettings();
     if(!els.reqModal.hidden) closeRequest();
+    if(!els.ghModal.hidden) closeGhModal();
   }
 });
 
@@ -3012,20 +3217,22 @@ window.addEventListener("beforeunload", (e) => {
 /* ===================== запуск ===================== */
 
 (async function init(){
-  if(!window.showDirectoryPicker){
-    document.body.innerHTML =
-      `<div class="unsupported">
-        <h2>Браузер не поддерживается</h2>
-        <p>Нужен <b>File System Access API</b> — он есть в Chrome и Edge на десктопе.
-        Откройте файл в одном из них.</p>
-        <p>Если открываете двойным кликом как <code>file://</code> — это нормально, API работает и так.</p>
-      </div>`;
-    return;
-  }
+  // без File System Access (мобильные и прочие браузеры) локальная папка
+  // недоступна, но репозиторий GitHub работает — приложение не отключаем
+  if(!window.showDirectoryPicker) els.openBtn.hidden = true;
   state.layout = loadLayout();
   applySidePrefs();
   applyHeadsHidden();
   renderModelsDatalist();
+  if(localStorage.getItem(LAST_MODE_KEY) === "github"){
+    const cfg = ghSavedCfg();
+    if(cfg && getGhToken()){
+      els.reopenBtn.hidden = false;
+      els.reopenBtn.textContent = "Открыть «" + cfg.owner + "/" + cfg.repo + "» (GitHub)";
+      return;
+    }
+  }
+  if(!window.showDirectoryPicker) return;
   try{
     const saved = await IDB.get("root");
     if(saved){
