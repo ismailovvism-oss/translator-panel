@@ -23,6 +23,7 @@
     --st-draft:    #c98a1e;
     --st-review:   #2f6fb0;
     --st-verified: #3f8f54;
+    --unsaved:     #8e52b4;   /* несохранённое — фиолетовый, не пересекается со статусами */
 
     --ui: "Segoe UI", system-ui, -apple-system, "Cantarell", "Noto Sans", sans-serif;
     --ru: "Iowan Old Style", "Palatino Linotype", "Cambria", Georgia, "Noto Serif", serif;
@@ -145,7 +146,7 @@
   .dot.none{ background:transparent; border:1px dashed var(--ink-faint); }
   .bi-text{ min-width:0; }
   .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
-  .bi-dirty{ font-size:11px; color:var(--st-draft); margin-left:5px; visibility:hidden; }
+  .bi-dirty{ font-size:11px; color:var(--unsaved); margin-left:5px; visibility:hidden; }
   .bi-dirty.on{ visibility:visible; }
   .bi-title{ font-size:13px; line-height:1.3; color:var(--ink); overflow-wrap:anywhere; }
   .bi-title.empty{ color:var(--ink-faint); font-style:italic; }
@@ -280,7 +281,12 @@
   }
   .statusbar button:last-child{ border-right:0; }
   .statusbar button:hover{ background:var(--sel); }
-  .statusbar button.on{ color:#fff; }
+  /* полоска снизу: цвет статуса виден и на неактивных кнопках */
+  .statusbar button[data-st="todo"]{ box-shadow:inset 0 -3px 0 var(--st-todo); }
+  .statusbar button[data-st="draft"]{ box-shadow:inset 0 -3px 0 var(--st-draft); }
+  .statusbar button[data-st="review"]{ box-shadow:inset 0 -3px 0 var(--st-review); }
+  .statusbar button[data-st="verified"]{ box-shadow:inset 0 -3px 0 var(--st-verified); }
+  .statusbar button.on{ color:#fff; box-shadow:none; }
   .statusbar button.on[data-st="todo"]{ background:var(--st-todo); }
   .statusbar button.on[data-st="draft"]{ background:var(--st-draft); }
   .statusbar button.on[data-st="review"]{ background:var(--st-review); }
@@ -291,7 +297,7 @@
     padding:6px 13px; border-radius:7px; cursor:pointer; font-size:13px;
   }
   .save-btn:hover{ border-color:var(--accent); }
-  .dirty{ font-size:18px; color:var(--st-draft); width:12px; visibility:hidden; }
+  .dirty{ font-size:18px; color:var(--unsaved); width:12px; visibility:hidden; }
   .dirty.on{ visibility:visible; }
   #dirty.on{ cursor:pointer; }
 
@@ -313,14 +319,23 @@
 
   /* ---------- панели-слоты ---------- */
   .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
-  .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--panel); }
+  .pane{ flex:1 1 0; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--panel); position:relative; }
 
   /* режим чтения: спрятать служебные шапки у ВСЕХ окон (сворачивание по вертикали).
      Не путать со сворачиванием слота в корешок (.collapsed — по ширине). */
   .panes.heads-hidden .pane:not(.collapsed) .pane-head{ display:none; }
-  /* …но окно с несохранёнными правками показывает шапку даже в режиме чтения —
-     иначе кнопка сохранения недоступна и непонятно, что есть несохранённое */
-  .panes.heads-hidden .pane.has-unsaved:not(.collapsed) .pane-head{ display:flex; }
+  /* …а у окна с несохранёнными правками поверх текста — плавающая кнопка,
+     чтобы сохранение оставалось доступным и в режиме чтения */
+  .save-float{
+    display:none; position:absolute; top:8px; right:18px; z-index:5;
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+    border-radius:7px; padding:3px 10px; font-size:12px; cursor:pointer;
+    box-shadow:0 2px 8px rgba(0,0,0,.10);
+  }
+  .save-float::after{ content:"●"; color:var(--unsaved); margin-left:6px; }
+  .save-float:hover{ border-color:var(--accent); color:var(--ink); }
+  .pane[data-role="source"] .save-float{ right:auto; left:18px; }  /* RTL: текст начинается справа */
+  .panes.heads-hidden .pane.has-unsaved:not(.collapsed) .save-float{ display:block; }
 
   .pane-head{
     flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
@@ -467,8 +482,7 @@
         <button data-st="review">review</button>
         <button data-st="verified">verified</button>
       </div>
-      <button class="save-btn" id="saveBtn" title="Сохраняет только окно перевода. У оригинала и вариантов — свои кнопки в их шапках. Ctrl+S сохраняет окно, в котором курсор">Сохранить перевод</button>
-      <button class="save-btn" id="saveAllBtn" hidden title="Сохранить все окна с несохранёнными изменениями — во всех разделах">Сохранить всё</button>
+      <button class="save-btn" id="saveAllBtn" hidden title="Сохранить все окна с несохранёнными изменениями — во всех разделах. У каждого окна есть и своя кнопка; Ctrl+S сохраняет окно, в котором курсор">Сохранить всё</button>
       <span class="dirty" id="dirty" title="Есть несохранённые изменения — нажмите, чтобы увидеть где">●</span>
       <div class="unsaved-pop" id="unsavedPop" hidden></div>
     </div>
@@ -702,7 +716,7 @@ const els = {
   filter: $("filter"), list: $("blockList"),
   progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
   head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"), splitBtn: $("splitBtn"),
-  statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
+  statusBar: $("statusBar"), dirty: $("dirty"),
   unsavedPop: $("unsavedPop"), saveAllBtn: $("saveAllBtn"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
@@ -1133,13 +1147,20 @@ function buildSlotDOM(spec, i){
     head.appendChild(take);
   }
 
-  // у оригинала и вариантов — своя кнопка сохранения и индикатор несохранённого
-  // (у перевода они в шапке блока, рядом со статусом)
-  if(spec.role === "variant" || spec.role === "source"){
+  // у каждого окна — одинаковая кнопка сохранения и индикатор несохранённого;
+  // окно пишет только в свой файл
+  {
     const save = document.createElement("button");
     save.className = "mini-btn";
-    save.dataset.action = spec.role === "source" ? "save-source" : "save-variant";
-    save.textContent = spec.role === "source" ? "Сохранить оригинал" : "Сохранить как вариант";
+    save.dataset.action =
+      spec.role === "source" ? "save-source" :
+      spec.role === "translation" ? "save-translation" : "save-variant";
+    save.textContent = "Сохранить";
+    save.title =
+      spec.role === "source" ? "Сохранить оригинал — файл в source/" :
+      spec.role === "translation" ? "Сохранить перевод — итоговый файл в translation/" :
+      `Сохранить вариант «${spec.label}» — файл в variants/`;
+    slot.saveEl = save;
     head.appendChild(save);
     const dot = document.createElement("span");
     dot.className = "dirty"; dot.textContent = "●";
@@ -1163,7 +1184,15 @@ function buildSlotDOM(spec, i){
   spine.className = "spine"; spine.dataset.action = "expand"; spine.title = "Развернуть слот";
   spine.innerHTML = `<span class="spine-name">${esc(spineName)}</span><span>развернуть ▸</span>`;
 
+  // плавающая кнопка сохранения — видна в режиме чтения у окна с правками
+  const sfloat = document.createElement("button");
+  sfloat.className = "save-float";
+  sfloat.dataset.action = slot.saveEl.dataset.action;
+  sfloat.textContent = "Сохранить";
+  sfloat.title = slot.saveEl.title;
+
   pane.appendChild(head); pane.appendChild(body); pane.appendChild(spine);
+  pane.appendChild(sfloat);
   slot.pane = pane; slot.head = head; slot.body = body;
   return slot;
 }
@@ -1418,13 +1447,15 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   state.transSlot = ts;
   const hasFile = !!(ts && ts.fileHandle);
   els.statusBar.hidden = !hasFile;
-  els.saveBtn.hidden = !hasFile;
   renderStatusBar(hasFile ? b.status : null);
   updateDirtyUI();
 
-  // контролы запроса видны только если в окне есть редактируемое поле
-  // (перевод без файла показывает «Начать перевод», запрос там не нужен)
-  for(const s of slots) if(s.reqGroup) s.reqGroup.hidden = !s.editor;
+  // контролы запроса и сохранения видны только если в окне есть редактируемое
+  // поле (перевод без файла показывает «Начать перевод», им там нечего делать)
+  for(const s of slots){
+    if(s.reqGroup) s.reqGroup.hidden = !s.editor;
+    if(s.saveEl) s.saveEl.hidden = !s.editor;
+  }
   // восстановить индикатор идущего запроса (баннер/кнопка) после перерисовки
   for(const s of slots) if(s.reqBtn) reflectSlotRequest(s);
 }
@@ -2283,7 +2314,6 @@ els.headsToggle.addEventListener("click", () => {
 els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.filter.addEventListener("input", renderList);
-els.saveBtn.addEventListener("click", () => saveTranslation());
 els.saveAllBtn.addEventListener("click", () => saveAll());
 els.dirty.addEventListener("click", () => {
   if(els.unsavedPop.hidden) renderUnsavedPop();
@@ -2397,6 +2427,11 @@ els.panes.addEventListener("click", (e) => {
   const ss = e.target.closest("[data-action='save-source']");
   if(ss){
     saveSource(state.slots[parseInt(ss.closest(".pane").dataset.index, 10)]);
+    return;
+  }
+  const st = e.target.closest("[data-action='save-translation']");
+  if(st){
+    saveTranslation(state.slots[parseInt(st.closest(".pane").dataset.index, 10)]);
     return;
   }
   const rq = e.target.closest("[data-action='request']");
