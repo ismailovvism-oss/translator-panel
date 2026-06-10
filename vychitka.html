@@ -145,6 +145,8 @@
   .dot.none{ background:transparent; border:1px dashed var(--ink-faint); }
   .bi-text{ min-width:0; }
   .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
+  .bi-dirty{ font-size:11px; color:var(--st-draft); margin-left:5px; visibility:hidden; }
+  .bi-dirty.on{ visibility:visible; }
   .bi-title{ font-size:13px; line-height:1.3; color:var(--ink); overflow-wrap:anywhere; }
   .bi-title.empty{ color:var(--ink-faint); font-style:italic; }
 
@@ -158,6 +160,7 @@
   .blockhead{
     flex:0 0 auto; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
     padding:9px 16px; border-bottom:1px solid var(--line); background:var(--panel);
+    position:relative; /* якорь для .unsaved-pop */
   }
   .bh-title{
     font-family:var(--ru); font-size:16px; color:var(--ink);
@@ -290,6 +293,23 @@
   .save-btn:hover{ border-color:var(--accent); }
   .dirty{ font-size:18px; color:var(--st-draft); width:12px; visibility:hidden; }
   .dirty.on{ visibility:visible; }
+  #dirty.on{ cursor:pointer; }
+
+  /* список несохранённого (по клику на ● в шапке) */
+  .unsaved-pop{
+    position:absolute; top:calc(100% + 4px); right:10px; z-index:40;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.16); padding:6px; min-width:250px; max-width:400px;
+  }
+  .unsaved-pop .u-head{ padding:6px 9px 4px; color:var(--ink-faint); font-size:12px; }
+  .u-item{
+    display:block; width:100%; text-align:left; border:0; background:none;
+    padding:7px 9px; border-radius:7px; cursor:pointer; font-size:13px;
+    color:var(--ink); font-family:inherit;
+  }
+  .u-item:hover{ background:var(--sel); }
+  .u-item .u-label{ font-variant-numeric:tabular-nums; }
+  .u-item .u-wins{ color:var(--ink-soft); }
 
   /* ---------- панели-слоты ---------- */
   .panes{ flex:1 1 auto; display:flex; min-height:0; gap:1px; background:var(--line); }
@@ -444,8 +464,9 @@
         <button data-st="review">review</button>
         <button data-st="verified">verified</button>
       </div>
-      <button class="save-btn" id="saveBtn">Сохранить</button>
-      <span class="dirty" id="dirty">●</span>
+      <button class="save-btn" id="saveBtn" title="Сохраняет только окно перевода. У оригинала и вариантов — свои кнопки в их шапках. Ctrl+S сохраняет окно, в котором курсор">Сохранить перевод</button>
+      <span class="dirty" id="dirty" title="Есть несохранённые изменения — нажмите, чтобы увидеть где">●</span>
+      <div class="unsaved-pop" id="unsavedPop" hidden></div>
     </div>
 
     <div class="panes" id="panes" hidden></div>
@@ -652,7 +673,7 @@ const state = {
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
   pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
-  drafts: new Map(), // несохранённое содержимое окон по (раздел \0 ключ слота) — на сессию
+  drafts: new Map(), // несохранённое содержимое окон, ключ = метка + " " + ключ слота — на сессию
   editCommands: [],  // рабочая копия команд в открытом окне настроек
   editRulesets: [],  // рабочая копия сводов правил в открытом окне настроек
 };
@@ -678,6 +699,7 @@ const els = {
   progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
   head: $("blockHead"), bhTitle: $("bhTitle"), bhLabel: $("bhLabel"), renameBtn: $("renameBtn"), splitBtn: $("splitBtn"),
   statusBar: $("statusBar"), saveBtn: $("saveBtn"), dirty: $("dirty"),
+  unsavedPop: $("unsavedPop"),
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
   nbTitle: $("nbTitle"), nbCreate: $("nbCreate"), nbCancel: $("nbCancel"),
@@ -722,13 +744,6 @@ function ownerLabel(base, labels){
   for(const L of labels)
     if((base === L || base.startsWith(L + " ")) && (best === null || L.length > best.length)) best = L;
   return best;
-}
-// ключ слота — для сопоставления при перестроении раскладки
-function slotKey(spec){
-  return spec.role === "variant" ? "variant|" + spec.label : spec.role;
-}
-function slotKeyOf(slot){
-  return slot.role === "variant" ? "variant|" + slot.label : slot.role;
 }
 // ключ слота — для сопоставления при перестроении раскладки
 function slotKey(spec){
@@ -973,12 +988,13 @@ function renderList(){
     li.innerHTML =
       `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
       `<span class="bi-text">` +
-        `<span class="bi-pages">${esc(b.label)}</span><br>` +
+        `<span class="bi-pages">${esc(b.label)}</span><span class="bi-dirty">●</span><br>` +
         `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || b.label)}</span>` +
       `</span>`;
     li.addEventListener("click", () => openBlock(b));
     els.list.appendChild(li);
   }
+  updateDirtyUI();
 }
 
 /* ===================== выбор и показ блока ===================== */
@@ -1306,11 +1322,15 @@ function clearDraft(slot){
   if(state.current) state.drafts.delete(draftKey(state.current.label, slotKeyOf(slot)));
 }
 
+// textarea отдаёт value с переносами \n — файлы с \r\n без нормализации
+// выглядели бы «вечно несохранёнными», хотя их никто не правил
+function normNL(t){ return t.replace(/\r\n?/g, "\n"); }
+
 // загрузить содержимое слота с диска (свежим)
 async function loadSlotFromDisk(slot, b){
   if(slot.role === "source"){
     let text = "";
-    if(b.srcHandle){ try{ text = await readFile(b.srcHandle); }catch{ text = ""; } }
+    if(b.srcHandle){ try{ text = normNL(await readFile(b.srcHandle)); }catch{ text = ""; } }
     slot.fileHandle = b.srcHandle || null; slot.savedText = text;
     makeEditor(slot, text); applyDraftIfAny(slot, b);
   } else if(slot.role === "translation"){
@@ -1319,7 +1339,7 @@ async function loadSlotFromDisk(slot, b){
       try{
         const p = splitFrontmatter(await readFile(b.trHandle));
         fmLines = p.fmLines || fmLines;
-        body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
+        body = normNL(p.body).replace(/^\n+/, "").replace(/\s+$/, "");
       }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
       slot.fileHandle = b.trHandle; slot.fmLines = fmLines; slot.savedText = body;
       makeEditor(slot, body); applyDraftIfAny(slot, b);
@@ -1332,7 +1352,7 @@ async function loadSlotFromDisk(slot, b){
     const dir = state.dirs.variants;
     if(dir){
       const name = `${b.label} ${slot.label}.md`;
-      try{ h = await dir.getFileHandle(name); text = await readFile(h); }
+      try{ h = await dir.getFileHandle(name); text = normNL(await readFile(h)); }
       catch{ h = null; text = ""; }
     }
     slot.fileHandle = h; slot.savedText = text;
@@ -1416,9 +1436,74 @@ function slotDirty(s){
   return !!s.editor && s.editor.value !== s.savedText;
 }
 function anyDirty(){ return state.slots.some(slotDirty); }
+
+// человекочитаемое имя окна по ключу слота — для списков несохранённого
+function slotKeyName(k){
+  return k === "source" ? "оригинал"
+    : k === "translation" ? "перевод"
+    : "вариант «" + k.slice("variant|".length) + "»";
+}
+// все несохранённые места: метка раздела → имена окон.
+// Живые окна текущего раздела + удержанные черновики остальных разделов.
+function unsavedMap(){
+  const m = new Map();
+  const add = (label, name) => {
+    const a = m.get(label) || [];
+    if(!a.includes(name)){ a.push(name); m.set(label, a); }
+  };
+  if(state.current)
+    for(const s of state.slots)
+      if(slotDirty(s)) add(state.current.label, slotKeyName(slotKeyOf(s)));
+  for(const k of state.drafts.keys()){
+    // ключ черновика = метка + " " + ключ слота; метка может содержать пробелы,
+    // поэтому ищем самый длинный префикс среди известных меток
+    let best = null;
+    for(const b of state.blocks)
+      if(k.startsWith(b.label + " ") && (!best || b.label.length > best.length)) best = b.label;
+    if(best) add(best, slotKeyName(k.slice(best.length + 1)));
+  }
+  return m;
+}
+// имена несохранённых окон текущего раздела — для сообщений «сначала сохраните…»
+function dirtyWindowNames(){
+  return state.slots.filter(slotDirty).map(s => slotKeyName(slotKeyOf(s)));
+}
+
 function updateDirtyUI(){
-  els.dirty.classList.toggle("on", anyDirty());
+  const m = unsavedMap();
+  els.dirty.classList.toggle("on", m.size > 0);
   for(const s of state.slots) if(s.dot) s.dot.classList.toggle("on", slotDirty(s));
+  // точки у разделов в списке
+  for(const li of els.list.children){
+    const el = li.querySelector(".bi-dirty");
+    if(!el) continue;
+    const names = m.get(li.dataset.label);
+    el.classList.toggle("on", !!names);
+    el.title = names ? "Несохранено: " + names.join(", ") : "";
+  }
+  if(m.size === 0) els.unsavedPop.hidden = true;
+  else if(!els.unsavedPop.hidden) renderUnsavedPop(m);
+}
+
+// список несохранённого по клику на ● в шапке; клик по строке открывает раздел
+function renderUnsavedPop(m){
+  m = m || unsavedMap();
+  if(m.size === 0){ els.unsavedPop.hidden = true; return; }
+  els.unsavedPop.innerHTML =
+    `<div class="u-head">Несохранённые изменения — нажмите, чтобы открыть раздел:</div>`;
+  for(const [label, names] of m){
+    const btn = document.createElement("button");
+    btn.className = "u-item";
+    btn.innerHTML =
+      `<span class="u-label">${esc(label)}</span> — <span class="u-wins">${esc(names.join(", "))}</span>`;
+    btn.addEventListener("click", () => {
+      els.unsavedPop.hidden = true;
+      const b = state.blocks.find(x => x.label === label);
+      if(b) openBlock(b);
+    });
+    els.unsavedPop.appendChild(btn);
+  }
+  els.unsavedPop.hidden = false;
 }
 function hasLiveMarker(text){ return MARKER_RE().test(text); }
 
@@ -1542,7 +1627,7 @@ async function renameFile(dir, oldName, newName){
 // переименовать блок = сменить метку: согласованно переименовать всю группу файлов
 async function renameBlock(b){
   if(!b) return;
-  if(anyDirty()){ toast("Сначала сохраните изменения — потом переименование", true); return; }
+  if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом переименование", true); return; }
   const raw = prompt("Новая метка блока.\nЭто сменит имя файлов и порядок в списке.", b.label);
   if(raw === null) return;
   const nl = raw.trim();
@@ -1595,7 +1680,7 @@ async function splitBlock(b){
   if(state.activeSector === 0){
     toast("Активный сектор — первый в оригинале; перед ним нет текста для исходного раздела", true); return;
   }
-  if(anyDirty()){ toast("Сначала сохраните изменения — потом деление раздела", true); return; }
+  if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом деление раздела", true); return; }
   if(!(await ensurePermission(state.rootHandle, "readwrite"))){ toast("Нет прав на запись", true); return; }
 
   // читаем свежими с диска (файлы мог менять git/другой инструмент)
@@ -2122,6 +2207,14 @@ els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.filter.addEventListener("input", renderList);
 els.saveBtn.addEventListener("click", () => saveTranslation());
+els.dirty.addEventListener("click", () => {
+  if(els.unsavedPop.hidden) renderUnsavedPop();
+  else els.unsavedPop.hidden = true;
+});
+document.addEventListener("click", (e) => {
+  if(!els.unsavedPop.hidden && !els.unsavedPop.contains(e.target) && e.target !== els.dirty)
+    els.unsavedPop.hidden = true;
+});
 
 els.statusBar.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-st]");
@@ -2301,6 +2394,7 @@ document.addEventListener("keydown", (e) => {
     if(!anyModalOpen()) saveFocused();   // в модалках Ctrl+S не трогает файлы
   }
   if(e.key === "Escape"){
+    if(!els.unsavedPop.hidden) els.unsavedPop.hidden = true;
     if(!els.pop.hidden) closePop();
     if(!els.modal.hidden) closeNewBlock();
     if(!els.settingsModal.hidden) closeSettings();
