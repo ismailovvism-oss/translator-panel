@@ -318,6 +318,9 @@
   /* режим чтения: спрятать служебные шапки у ВСЕХ окон (сворачивание по вертикали).
      Не путать со сворачиванием слота в корешок (.collapsed — по ширине). */
   .panes.heads-hidden .pane:not(.collapsed) .pane-head{ display:none; }
+  /* …но окно с несохранёнными правками показывает шапку даже в режиме чтения —
+     иначе кнопка сохранения недоступна и непонятно, что есть несохранённое */
+  .panes.heads-hidden .pane.has-unsaved:not(.collapsed) .pane-head{ display:flex; }
 
   .pane-head{
     flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap;
@@ -1474,7 +1477,10 @@ function updateDirtyUI(){
   const m = unsavedMap();
   els.dirty.classList.toggle("on", m.size > 0);
   els.saveAllBtn.hidden = m.size === 0;
-  for(const s of state.slots) if(s.dot) s.dot.classList.toggle("on", slotDirty(s));
+  for(const s of state.slots){
+    if(s.dot) s.dot.classList.toggle("on", slotDirty(s));
+    if(s.pane) s.pane.classList.toggle("has-unsaved", slotDirty(s));
+  }
   // точки у разделов в списке
   for(const li of els.list.children){
     const el = li.querySelector(".bi-dirty");
