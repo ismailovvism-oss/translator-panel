@@ -443,6 +443,7 @@
         <option value="source">Оригинал (AR)</option>
         <option value="translation">Перевод (RU)</option>
         <option value="variant">Вариант</option>
+        <option value="footnotes">Сноски</option>
       </select>
     </label>
     <label id="popLabelWrap" hidden>Ярлык источника
@@ -688,6 +689,7 @@ const state = {
   layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
   slots: [],         // отрисованные слоты текущего блока
   transSlot: null,   // слот основного перевода (для статуса/сохранения/Ctrl+S)
+  fnFollowKey: null, // ключ окна, за которым следует окно сносок
   activeSector: null,// индекс активного сектора (синхронная подсветка во всех слотах)
   requestSlot: null, // слот-вариант, для которого открыто окно API-запроса
   pending: new Map(),// идущие фоновые API-запросы: ключ → {model, startedAt, controller}
@@ -1107,13 +1109,16 @@ function buildSlotDOM(spec, i){
   const spineName =
     spec.role === "source" ? "Оригинал" :
     spec.role === "translation" ? "Перевод" :
+    spec.role === "footnotes" ? "Сноски" :
     "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
   label.textContent =
     spec.role === "source" ? "Оригинал · AR" :
     spec.role === "translation" ? "Перевод · RU" :
+    spec.role === "footnotes" ? "Сноски" :
     "Вариант · " + spec.label;
+  if(spec.role === "footnotes") slot.fnTitleEl = label;   // подпись «Сноски · окно»
   head.appendChild(label);
 
   // у оригинала, перевода и варианта — выбор команды, модели и кнопка запроса.
@@ -1161,11 +1166,13 @@ function buildSlotDOM(spec, i){
     save.className = "mini-btn";
     save.dataset.action =
       spec.role === "source" ? "save-source" :
-      spec.role === "translation" ? "save-translation" : "save-variant";
+      spec.role === "translation" ? "save-translation" :
+      spec.role === "footnotes" ? "save-footnotes" : "save-variant";
     save.textContent = "Сохранить";
     save.title =
       spec.role === "source" ? "Сохранить оригинал — файл в source/" :
       spec.role === "translation" ? "Сохранить перевод — итоговый файл в translation/" :
+      spec.role === "footnotes" ? "Сноски — часть текста ведомого окна; сохраняется его файл" :
       `Сохранить вариант «${spec.label}» — файл в variants/`;
     slot.saveEl = save;
     head.appendChild(save);
@@ -1204,27 +1211,37 @@ function buildSlotDOM(spec, i){
   return slot;
 }
 
-// создать редактируемое поле (оригинал / перевод / вариант) с подсветкой
+// создать редактируемое поле (оригинал / перевод / вариант / сноски) с подсветкой
 // секторов, заголовков и маркеров ==?...==
 function makeEditor(slot, value){
   slot.body.innerHTML = "";
   const isSrc = slot.role === "source";
+  const isFn = slot.role === "footnotes";
   const wrap = document.createElement("div"); wrap.className = "editor-wrap";
   const bd = document.createElement("div"); bd.className = "backdrop"; bd.setAttribute("aria-hidden","true");
   bd.dir = isSrc ? "rtl" : "ltr";
   const ta = document.createElement("textarea");
   ta.className = "editor"; ta.dir = isSrc ? "rtl" : "ltr"; ta.spellcheck = true;
-  ta.placeholder = isSrc ? "Оригинал…" : slot.role === "variant" ? "Вставьте вариант перевода…" : "Перевод…";
+  ta.placeholder =
+    isSrc ? "Оригинал…" :
+    slot.role === "variant" ? "Вставьте вариант перевода…" :
+    isFn ? "Сноски выбранного окна ([^1]: текст…)" : "Перевод…";
   ta.value = value || "";
   wrap.appendChild(bd); wrap.appendChild(ta); slot.body.appendChild(wrap);
   slot.editor = ta; slot.backdrop = bd;
 
-  const sync = () => syncActiveFromEditor(slot);
-  ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); });
-  // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
-  ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); });
-  ta.addEventListener("keyup", sync);
-  ta.addEventListener("focus", sync);
+  if(isFn){
+    // окно сносок — вид на хвост ведомого окна: правки уходят туда же,
+    // секторная синхронизация и черновики к нему не относятся
+    ta.addEventListener("input", () => { updateBackdrop(slot); applyFootnotesEdit(slot); });
+  } else {
+    const sync = () => syncActiveFromEditor(slot);
+    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); });
+    // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
+    ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); jumpFootnoteAtCursor(slot); });
+    ta.addEventListener("keyup", () => { sync(); jumpFootnoteAtCursor(slot); });
+    ta.addEventListener("focus", () => { sync(); setFnFollow(slot); });
+  }
   ta.addEventListener("scroll", () => { bd.scrollTop = ta.scrollTop; bd.scrollLeft = ta.scrollLeft; });
   updateBackdrop(slot);
 }
@@ -1333,8 +1350,85 @@ function scrollTargetsFrom(src){
   if(ord == null) return;
   const targets = src.role === "source"
     ? state.slots.filter(s => s.role === "translation" && s.editor)
-    : state.slots.filter(s => s !== src && s.role !== "translation" && s.editor);
+    : state.slots.filter(s => s !== src && s.role !== "translation" && s.role !== "footnotes" && s.editor);
   for(const t of targets) scrollSlotToSector(t, ord);
+}
+
+/* ---- окно сносок: вид на определения [^id]: ведомого окна ----
+   Ведомое окно = последнее, в котором был фокус (оригинал/перевод/вариант).
+   Правки в окне сносок переписывают хвост определений в ведомом окне;
+   файла у окна сносок нет, сохраняется файл ведомого окна. */
+
+function editableSlots(){
+  return state.slots.filter(s => s.role !== "footnotes" && s.editor);
+}
+function fnFollowSlot(){
+  return editableSlots().find(s => slotKeyOf(s) === state.fnFollowKey)
+      || (state.transSlot && state.transSlot.editor ? state.transSlot : null)
+      || editableSlots()[0] || null;
+}
+function setFnFollow(slot){
+  const k = slotKeyOf(slot);
+  if(state.fnFollowKey === k) return;
+  state.fnFollowKey = k;
+  refreshFootnotes(true);
+}
+// показать в окнах сносок определения из ведомого окна; force — даже если
+// содержимое то же (смена ведомого окна, перерисовка)
+function refreshFootnotes(force){
+  const fns = state.slots.filter(s => s.role === "footnotes" && s.editor);
+  if(!fns.length) return;
+  const src = fnFollowSlot();
+  const text = src ? extractFootnoteDefs(src.editor.value)[1].map(d => d.text).join("\n\n") : "";
+  const dir = src && src.role === "source" ? "rtl" : "ltr";
+  for(const fn of fns){
+    if(fn.fnTitleEl)
+      fn.fnTitleEl.textContent = "Сноски · " + (src ? slotKeyName(slotKeyOf(src)) : "нет окна");
+    if(!force && document.activeElement === fn.editor) continue;  // не затирать под руками
+    if(fn.editor.value !== text){ fn.editor.value = text; updateBackdrop(fn); }
+    fn.editor.dir = dir; fn.backdrop.dir = dir;
+  }
+}
+// правка в окне сносок: тело ведомого окна остаётся, хвост определений заменяется
+function applyFootnotesEdit(fn){
+  const src = fnFollowSlot();
+  if(!src || !src.editor) return;
+  const [body] = extractFootnoteDefs(src.editor.value);
+  const defs = fn.editor.value.replace(/^\s+|\s+$/g, "");
+  src.editor.value = defs ? body + "\n\n" + defs : body;
+  updateBackdrop(src); updateDirtyUI();
+}
+// курсор стоит на ссылке [^id] — прокрутить окно сносок к её определению
+function jumpFootnoteAtCursor(slot){
+  const fns = state.slots.filter(s => s.role === "footnotes" && s.editor);
+  if(!fns.length || fnFollowSlot() !== slot) return;
+  const v = slot.editor.value, pos = slot.editor.selectionStart;
+  const from = Math.max(0, pos - 80);
+  const seg = v.slice(from, pos + 80);
+  let id = null, m;
+  const re = /\[\^([^\]\n]+)\](?!:)/g;
+  while((m = re.exec(seg))){
+    const s = from + m.index;
+    if(pos >= s && pos <= s + m[0].length){ id = m[1]; break; }
+  }
+  if(id == null) return;
+  for(const fn of fns){
+    const i = fn.editor.value.indexOf("[^" + id + "]:");
+    if(i < 0) continue;
+    // вертикальную позицию меряем по подложке — она учитывает мягкие переносы
+    const top = caretTopInBackdrop(fn.backdrop, i);
+    if(top != null){
+      fn.editor.scrollTop = Math.max(0, top - 10);
+      fn.backdrop.scrollTop = fn.editor.scrollTop;
+    }
+  }
+}
+// сохранить файл окна по его роли (для окна сносок — файл ведомого окна)
+function saveSlotByRole(slot){
+  if(!slot) return;
+  if(slot.role === "translation") saveTranslation(slot);
+  else if(slot.role === "source") saveSource(slot);
+  else if(slot.role === "variant") saveVariant(slot);
 }
 
 /* ---- черновики: несохранённое содержимое окон удерживается в памяти сессии,
@@ -1345,7 +1439,7 @@ function draftKey(blockLabel, slotKeyStr){ return blockLabel + " " + slotKeyStr;
 function captureDrafts(){
   if(!state.current) return;
   for(const s of state.slots){
-    if(!s.editor) continue;
+    if(!s.editor || s.role === "footnotes") continue;   // сноски — часть ведомого окна
     const k = draftKey(state.current.label, slotKeyOf(s));
     if(s.editor.value !== s.savedText) state.drafts.set(k, s.editor.value);
     else state.drafts.delete(k);
@@ -1368,6 +1462,12 @@ function normNL(t){ return t.replace(/\r\n?/g, "\n"); }
 
 // загрузить содержимое слота с диска (свежим)
 async function loadSlotFromDisk(slot, b){
+  if(slot.role === "footnotes"){
+    // своего файла нет — содержимое придёт из ведомого окна (refreshFootnotes)
+    slot.fileHandle = null; slot.savedText = "";
+    makeEditor(slot, "");
+    return;
+  }
   if(slot.role === "source"){
     let text = "";
     if(b.srcHandle){ try{ text = normNL(await readFile(b.srcHandle)); }catch{ text = ""; } }
@@ -1403,7 +1503,10 @@ async function loadSlotFromDisk(slot, b){
 // восстановить содержимое слота из памяти (при переупорядочивании/добавлении) —
 // чтобы не потерять несохранённые правки
 function restoreSlot(slot, old){
-  if(slot.role === "source"){
+  if(slot.role === "footnotes"){
+    slot.fileHandle = null; slot.savedText = "";
+    makeEditor(slot, "");           // содержимое перезальёт refreshFootnotes
+  } else if(slot.role === "source"){
     slot.fileHandle = old.fileHandle; slot.savedText = old.savedText;
     makeEditor(slot, old.curValue != null ? old.curValue : old.savedText);
   } else if(slot.role === "translation"){
@@ -1465,6 +1568,8 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   }
   // восстановить индикатор идущего запроса (баннер/кнопка) после перерисовки
   for(const s of slots) if(s.reqBtn) reflectSlotRequest(s);
+
+  refreshFootnotes(true);   // окна сносок — содержимым ведомого окна
 }
 
 function renderStatusBar(status){
@@ -1475,6 +1580,7 @@ function renderStatusBar(status){
 /* ===================== изменения и сохранение ===================== */
 
 function slotDirty(s){
+  if(s.role === "footnotes") return false;   // правки учитываются в ведомом окне
   return !!s.editor && s.editor.value !== s.savedText;
 }
 function anyDirty(){ return state.slots.some(slotDirty); }
@@ -1483,6 +1589,7 @@ function anyDirty(){ return state.slots.some(slotDirty); }
 function slotKeyName(k){
   return k === "source" ? "оригинал"
     : k === "translation" ? "перевод"
+    : k === "footnotes" ? "сноски"
     : "вариант «" + k.slice("variant|".length) + "»";
 }
 // все несохранённые места: метка раздела → имена окон.
@@ -2001,7 +2108,9 @@ async function callOpenRouter(key, model, prompt, signal){
 
 // человекочитаемое имя окна для заголовка/тостов
 function slotDisplayName(slot){
-  return slot.role === "variant" ? slot.label : slot.role === "translation" ? "Перевод" : "Оригинал";
+  return slot.role === "variant" ? slot.label
+    : slot.role === "translation" ? "Перевод"
+    : slot.role === "footnotes" ? "Сноски" : "Оригинал";
 }
 
 // открыть окно запроса (вариант или перевод) по команде слота; текст уже подставлен
@@ -2259,9 +2368,8 @@ function saveFocused(){
   const ae = document.activeElement;
   const s = state.slots.find(x => x.editor === ae);
   if(s){
-    if(s.role === "translation") saveTranslation(s);
-    else if(s.role === "source") saveSource(s);
-    else saveVariant(s);
+    if(s.role === "footnotes") saveSlotByRole(fnFollowSlot());  // сноски → файл ведомого окна
+    else saveSlotByRole(s);
     return;
   }
   if(state.transSlot && state.transSlot.fileHandle) saveTranslation();
@@ -2477,6 +2585,8 @@ els.panes.addEventListener("click", (e) => {
     saveTranslation(state.slots[parseInt(st.closest(".pane").dataset.index, 10)]);
     return;
   }
+  const sf = e.target.closest("[data-action='save-footnotes']");
+  if(sf){ saveSlotByRole(fnFollowSlot()); return; }
   const rq = e.target.closest("[data-action='request']");
   if(rq){
     openRequest(state.slots[parseInt(rq.closest(".pane").dataset.index, 10)]);
