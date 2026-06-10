@@ -1039,7 +1039,14 @@ async function openBlock(b){
 
   await renderSlots({ reload: true });
 
-  if(state.transSlot && state.transSlot.editor) state.transSlot.editor.focus();
+  // фокус в перевод, но курсор в начало — иначе браузер прокручивает к курсору,
+  // который после установки value стоит в конце текста
+  const ed = state.transSlot && state.transSlot.editor;
+  if(ed){
+    ed.focus();
+    ed.setSelectionRange(0, 0);
+    ed.scrollTop = 0;
+  }
 }
 
 /* ===================== слоты-окна ===================== */
