@@ -468,6 +468,7 @@
     <button data-md="u" title="Подчёркнутый: &lt;u&gt;текст&lt;/u&gt; (Ctrl+U)"><u>Ч</u></button>
     <button data-md="footnote" title="Вставить сноску: [^N] в месте курсора + заготовка определения в конце текста">Сноска</button>
     <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
+    <button data-md="page" title="Маркер страницы: &lt;!-- ص: N --&gt; отдельной строкой над абзацем. Только в оригинале; нумерация сквозная по тому. Номер подставляется следующим — поправьте, если нужно">стр.</button>
   </span>
   <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
@@ -2841,6 +2842,7 @@ function applyMdAction(kind){
   const s = focusedEditorSlot();
   if(!s){ toast("Поставьте курсор в текст — вставка идёт в место курсора", true); return; }
   if(kind === "footnote"){ insertFootnote(s); return; }
+  if(kind === "page"){ insertPageMarker(s); return; }
   const [pre, post] = MD_WRAPS[kind];
   const ed = s.editor;
   const a = ed.selectionStart, b = ed.selectionEnd;
@@ -2849,6 +2851,31 @@ function applyMdAction(kind){
   if(sel) ed.setSelectionRange(a + pre.length, b + pre.length);   // выделение остаётся на тексте
   else ed.setSelectionRange(a + pre.length, a + pre.length);      // курсор между скобками
 }
+// маркер страницы <!-- ص: N --> — отдельной строкой над абзацем, вплотную к нему
+// (без пустой строки: иначе маркер стал бы лишним сектором и сбил пары).
+// Ставится только в оригинале (контракт: страницы живут в source/, сквозные по тому).
+function insertPageMarker(slot){
+  if(slot.role !== "source"){
+    toast("Маркер страницы ставится только в оригинале (страницы живут в source)", true);
+    return;
+  }
+  const ed = slot.editor;
+  const lineStart = ed.value.lastIndexOf("\n", ed.selectionStart - 1) + 1;
+  // номер по умолчанию: максимум из уже стоящих в этом блоке + 1
+  let max = 0, m;
+  const re = /<!--\s*(?:ص|p)\s*:?\s*([0-9٠-٩]+)\s*-->/g;
+  const west = s => s.replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660));
+  while((m = re.exec(ed.value))) max = Math.max(max, parseInt(west(m[1]), 10));
+  const num = String(max + 1);
+  const text = `<!-- ص: ${num} -->\n`;
+  ed.setSelectionRange(lineStart, lineStart);
+  insertAtSelection(ed, text);
+  // число оставляем выделенным — если блок начинается не со «следующей» страницы, сразу перепечатать
+  const numPos = lineStart + text.indexOf(num);
+  ed.setSelectionRange(numPos, numPos + num.length);
+  toast(`Маркер страницы ${num} — число выделено, поправьте при необходимости`);
+}
+
 // свободный числовой id сноски: максимум из [^N] в тексте + 1
 function nextFootnoteId(text){
   let max = 0, m; const re = /\[\^(\d+)\]/g;
