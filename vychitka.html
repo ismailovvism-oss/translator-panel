@@ -1340,7 +1340,11 @@ function parseBlocks(text){
     if(t === ""){ flush(); blocks.push({ type:"blank", start, end }); continue; }
     if(/^<!--[\s\S]*-->$/.test(t)){ flush(); blocks.push({ type:"comment", start, end, text:t }); continue; }
     const h = raw.match(/^(#{1,6})\s+(.*)$/);
-    if(h){ flush(); blocks.push({ type:"sector", kind:"heading", level:h[1].length, idx:sectorIdx++, start, end, text:h[2] }); continue; }
+    // Заголовок ПОКАЗЫВАЕМ, но сектором не считаем: в арабском оригинале его нет,
+    // а лишний сектор сдвинул бы посекторную парность. Рендерится как .bd-head.
+    if(h){ flush(); blocks.push({ type:"heading", level:h[1].length, start, end, text:h[2] }); continue; }
+    // Строка-тег (целиком из #тегов, Obsidian) — служебная, тоже не сектор.
+    if(/^#[\p{L}\p{N}_/-]+(\s+#[\p{L}\p{N}_/-]+)*$/u.test(t)){ flush(); blocks.push({ type:"tag", start, end, text:t }); continue; }
     if(!para) para = { start, end }; else para.end = end;
   }
   flush();
@@ -1559,9 +1563,9 @@ function updateBackdrop(slot){
   for(const b of blocks){
     if(b.start > cursor) html += markHTML(text.slice(cursor, b.start), sliceRanges(fr, cursor, b.start));   // межблочные \n
     let inner = markHTML(text.slice(b.start, b.end), sliceRanges(fr, b.start, b.end));
-    if(b.type === "comment")
+    if(b.type === "comment" || b.type === "tag")
       inner = `<span class="bd-comment">${inner}</span>`;          // бледная служебная строка
-    else if(b.type === "sector" && b.kind === "heading")
+    else if(b.type === "heading")
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
     if(b.type === "sector" && b.idx === state.activeSector)
       inner = `<span class="sec-active">${inner}</span>`;
