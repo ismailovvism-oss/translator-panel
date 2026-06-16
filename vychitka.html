@@ -507,6 +507,7 @@
       <button data-md="page" title="Маркер страницы: &lt;!-- ص: N --&gt; отдельной строкой над абзацем. Только в оригинале; нумерация сквозная по тому. Номер подставляется следующим — поправьте, если нужно">стр.</button>
       <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
       <button data-md="note" title="Заметка — непарный сектор: текст виден (бирюзовая полоса), но абзацы внутри не считаются за абзац при сверке. Работает в любом окне, включая оригинал. Оборачивает выделение в &lt;!-- note --&gt; … &lt;!-- /note --&gt;">Заметка</button>
+      <button data-md="anchors" id="anchorBtn" hidden title="Проставить якоря &lt;!-- sNNN --&gt; абзацам этого окна без якоря (нумерация продолжается от максимума; существующие не трогаются). Якоря задают парность по ID между языками — нужно при авторстве книги в режиме библиотеки">⌗ Якоря</button>
     </span>
   </span>
   <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
@@ -831,7 +832,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"),
+  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), anchorBtn: $("anchorBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
@@ -2157,6 +2158,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   // шапка блока: статус/сохранение работают с основным переводом
   const ts = slots.find(s => s.role === "translation") || null;
   state.transSlot = ts;
+  els.anchorBtn.hidden = state.mode !== "library";   // якоря sNNN — только в книге
   // в library статус — у главы (в book.json), файл не обязателен; в папочном — по файлу
   const showStatus = state.mode === "library" ? !!ts : !!(ts && ts.fileHandle);
   els.statusBar.hidden = !showStatus;
@@ -3223,6 +3225,10 @@ function applyMdAction(kind){
   if(kind === "ul"){ insertList(s, false); return; }
   if(kind === "ol"){ insertList(s, true); return; }
   if(kind === "callout"){ if(els.calloutPop.hidden) openCalloutPop(s); else closeCalloutPop(); return; }
+  if(kind === "anchors"){
+    if(state.mode !== "library"){ toast("Якоря sNNN нужны только в режиме книги (читалка)", true); return; }
+    assignAnchors(s); return;
+  }
   const [pre, post] = MD_WRAPS[kind];
   const ed = s.editor;
   const a = ed.selectionStart, b = ed.selectionEnd;
@@ -3329,6 +3335,29 @@ function insertCallout(slot, type){
   // курсор после «[!тип] » — место для заголовка выноски
   const headPos = a + lead.length + header.length;
   ed.setSelectionRange(headPos, headPos);
+}
+
+// проставить якоря <!-- sNNN --> абзацам без якоря (нумерация продолжается от
+// максимума; существующие id не трогаем — парность между языками не плывёт).
+// Вставка одним шагом через выделение всего текста — родная отмена сохраняется.
+function assignAnchors(slot){
+  if(!slot || !slot.editor) return;
+  const v = slot.editor.value;
+  const secs = sectorsOf(parseBlocks(v));
+  let max = 0;
+  for(const s of secs) if(s.id){ const n = parseInt(String(s.id).replace(/^s/i, ""), 10); if(Number.isFinite(n)) max = Math.max(max, n); }
+  const missing = secs.filter(s => !s.id);   // в порядке текста
+  if(!missing.length){ toast("Все секторы уже с якорями"); return; }
+  missing.forEach((s, i) => { s._id = "s" + String(max + 1 + i).padStart(3, "0"); });
+  let text = v;
+  for(let i = missing.length - 1; i >= 0; i--){   // с конца, чтобы смещения не плыли
+    const s = missing[i];
+    text = text.slice(0, s.start) + `<!-- ${s._id} -->\n` + text.slice(s.start);
+  }
+  const ed = slot.editor;
+  ed.focus(); ed.setSelectionRange(0, ed.value.length);
+  insertAtSelection(ed, text);
+  toast(`Проставлены якоря: +${missing.length}`);
 }
 
 // список по выделенным строкам: маркированный «- » или нумерованный «1. », «2. »…
