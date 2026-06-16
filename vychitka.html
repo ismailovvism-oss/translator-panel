@@ -480,6 +480,7 @@
   <button id="sideToggle" class="btn" title="Свернуть/показать список блоков">☰</button>
   <button id="openBtn" class="btn primary">Открыть папку</button>
   <button id="ghOpenBtn" class="btn" title="Открыть репозиторий перевода на GitHub — работает по ссылке и на телефоне">Открыть с GitHub</button>
+  <button id="openBookBtn" class="btn" title="Открыть книгу читалки (папка с book.json: языковые папки + book.json) и править её на месте">Открыть книгу</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть папку — вернуться к пустым редактируемым окнам (черновику)" hidden>Закрыть папку</button>
@@ -808,7 +809,9 @@ function rulesetByName(name){ return name ? getRulesets().find(r => r.name === n
 const state = {
   rootHandle: null,  // корневая папка локального режима (для переоткрытия)
   fs: null,          // адаптер хранилища: локальная папка или GitHub (см. localAdapter/githubAdapter)
-  blocks: [],        // [{label, title, status, srcHandle, trHandle}]
+  mode: null,        // "folder" | "library" | null(черновик) — папочный набор vs формат читалки
+  book: null,        // в режиме library: {handle, bookId, data(book.json), srcLang, transLang, srcRtl, transRtl}
+  blocks: [],        // [{label, title, status, srcHandle, trHandle}] (+ chapter в library)
   current: null,     // активный блок
   layout: [],        // [{role:'source'} | {role:'translation'} | {role:'variant', label}]
   slots: [],         // отрисованные слоты текущего блока
@@ -828,7 +831,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  closeFolderBtn: $("closeFolderBtn"),
+  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
@@ -1172,6 +1175,13 @@ async function reopenFolder(){
       return;
     }
   }
+  if(localStorage.getItem(LAST_MODE_KEY) === "library"){
+    const bh = await IDB.get("book");
+    if(!bh){ toast("Нет сохранённой книги", true); return; }
+    if(!(await ensurePermission(bh, "readwrite"))){ toast("Нет доступа к книге — выберите заново", true); return; }
+    await useBook(bh);
+    return;
+  }
   const handle = await IDB.get("root");
   if(!handle){ toast("Нет сохранённой папки", true); return; }
   if(!(await ensurePermission(handle, "readwrite"))){
@@ -1190,14 +1200,66 @@ async function useRoot(handle){
   try{ varDir = await handle.getDirectoryHandle("variants"); }   // необязательна
   catch{ varDir = null; }
   state.fs = localAdapter(handle, { source: src, translation: tr, variants: varDir });
+  state.mode = "folder"; state.book = null;
   try{ localStorage.setItem(LAST_MODE_KEY, "local"); }catch{}
   await storageReady();
+}
+
+/* ---- режим библиотеки (формат читалки): открыть папку-книгу (внутри book.json),
+   языковые папки <lang>/ сопоставить ролям source/translation, править на месте ---- */
+async function pickBook(){
+  try{
+    const handle = await window.showDirectoryPicker({ id: "vychitka-book", mode: "readwrite" });
+    await IDB.set("book", handle);
+    await useBook(handle);
+  }catch(e){
+    if(e && e.name === "AbortError") return;
+    console.error(e); toast("Не удалось открыть книгу: " + e.message, true);
+  }
+}
+async function useBook(handle){
+  let data;
+  try{
+    const bj = await handle.getFileHandle("book.json");
+    data = JSON.parse(await (await bj.getFile()).text());
+  }catch{ toast("Это не папка-книга: нет book.json в корне", true); return; }
+  const langs = Array.isArray(data.languages) ? data.languages : [];
+  if(!langs.length){ toast("В book.json нет languages[]", true); return; }
+  const rtl = Array.isArray(data.rtl) ? data.rtl : [];
+  const srcLang = langs[0], transLang = langs[1] || null;
+  // языковые папки: создаём при отсутствии, чтобы можно было начать новую книгу/перевод
+  const srcDir = await handle.getDirectoryHandle(srcLang, { create: true });
+  const transDir = transLang ? await handle.getDirectoryHandle(transLang, { create: true }) : null;
+  let varDir = null;
+  try{ varDir = await handle.getDirectoryHandle("variants"); }catch{ varDir = null; }
+  state.rootHandle = handle;
+  state.fs = localAdapter(handle, { source: srcDir, translation: transDir, variants: varDir });
+  state.mode = "library";
+  state.book = {
+    handle, bookId: data.bookId || handle.name, data,
+    srcLang, transLang, srcRtl: rtl.includes(srcLang), transRtl: !!transLang && rtl.includes(transLang),
+  };
+  try{ localStorage.setItem(LAST_MODE_KEY, "library"); }catch{}
+  const tt = data.title && (data.title[transLang] || data.title[srcLang] || Object.values(data.title)[0]);
+  els.rootName.innerHTML = "Книга: <code>" + esc(tt || state.book.bookId) + "</code>";
+  els.reopenBtn.hidden = true;
+  els.closeFolderBtn.hidden = false;
+  els.newBlockBtn.hidden = false;
+  els.mdTools.hidden = false;
+  await scan();
+}
+// записать book.json (метаданные книги: заголовки/статусы глав) в корень книги
+async function saveBookJson(){
+  const fh = await state.book.handle.getFileHandle("book.json", { create: true });
+  const w = await fh.createWritable();
+  await w.write(JSON.stringify(state.book.data, null, 2) + "\n");
+  await w.close();
 }
 
 /* ---- черновик без папки: сразу даём редактируемые окна, папку выберем при
    первом сохранении (тогда же создаём блок и переходим в обычный режим) ---- */
 async function enterDraft(){
-  state.fs = null; state.rootHandle = null; state.blocks = [];
+  state.fs = null; state.rootHandle = null; state.blocks = []; state.mode = null; state.book = null;
   state.drafts.clear();
   state.current = { label: "", title: "", status: null, srcHandle: null, trHandle: null, draft: true };
   els.list.innerHTML = "";
@@ -1227,6 +1289,7 @@ async function bindFolderFromDraft(){
   try{ await IDB.set("root", handle); }catch{}
   state.rootHandle = handle;
   state.fs = localAdapter(handle, { source: src, translation: tr, variants: varDir });
+  state.mode = "folder"; state.book = null;
   try{ localStorage.setItem(LAST_MODE_KEY, "local"); }catch{}
   els.rootName.innerHTML = state.fs.title;
   els.reopenBtn.hidden = true;
@@ -1285,13 +1348,23 @@ async function storageReady(){
 
 // показать кнопку «переоткрыть» для хранилища из прошлого сеанса (если есть)
 async function refreshReopenButton(){
-  if(localStorage.getItem(LAST_MODE_KEY) === "github"){
+  const mode = localStorage.getItem(LAST_MODE_KEY);
+  if(mode === "github"){
     const cfg = ghSavedCfg();
     if(cfg && getGhToken()){
       els.reopenBtn.hidden = false;
       els.reopenBtn.textContent = "Открыть «" + cfg.owner + "/" + cfg.repo + "» (GitHub)";
       return;
     }
+  } else if(mode === "library" && window.showDirectoryPicker){
+    try{
+      const bh = await IDB.get("book");
+      if(bh){
+        els.reopenBtn.hidden = false;
+        els.reopenBtn.textContent = "Открыть книгу «" + bh.name + "»";
+        return;
+      }
+    }catch{}
   } else if(window.showDirectoryPicker){
     try{
       const saved = await IDB.get("root");
@@ -1345,6 +1418,7 @@ async function connectGitHub(owner, repo, branch, token){
   const info = await ghFetch(token, "GET", `https://api.github.com/repos/${owner}/${repo}`);
   state.fs = githubAdapter({ owner, repo, branch: branch || info.default_branch || "main", token });
   state.rootHandle = null;
+  state.mode = "folder"; state.book = null;
   try{
     localStorage.setItem(LAST_MODE_KEY, "github");
     localStorage.setItem(GH_REPO_KEY, JSON.stringify({ owner, repo, branch: branch || "" }));
@@ -1356,6 +1430,7 @@ async function connectGitHub(owner, repo, branch, token){
 }
 
 async function scan(){
+  if(state.mode === "library") return scanBook();
   // источники по метке (имя файла без .md)
   const sources = new Map();   // label -> handle
   for(const f of await state.fs.list("source")) sources.set(labelOf(f.name), f.handle);
@@ -1394,6 +1469,29 @@ async function scan(){
   renderCounts();
   renderList();
   if(!blocks.length){ toast("Блоки не найдены", true); }
+}
+
+// сканирование книги читалки: блоки = главы из book.json (порядок сохраняем),
+// заголовок/статус — из главы, файлы — <lang>/<file> через адаптер
+async function scanBook(){
+  const b = state.book, tl = b.transLang, sl = b.srcLang;
+  const chapters = Array.isArray(b.data.chapters) ? b.data.chapters : [];
+  const blocks = [];
+  for(const c of chapters){
+    const file = c.file;
+    if(!file) continue;
+    const label = labelOf(file) || file;
+    let srcHandle = null, trHandle = null;
+    try{ srcHandle = await state.fs.getFile("source", file, false); }catch{}
+    if(tl){ try{ trHandle = await state.fs.getFile("translation", file, false); }catch{} }
+    const title = (c.title && (c.title[tl] || c.title[sl] || Object.values(c.title)[0])) || "";
+    const status = STATUSES.includes(c.status) ? c.status : null;
+    blocks.push({ label, title, status, srcHandle, trHandle, chapter: c });
+  }
+  state.blocks = blocks;   // порядок — как в book.json (не сортируем)
+  renderCounts();
+  renderList();
+  if(!blocks.length) toast("В книге нет глав (book.json → chapters)", true);
 }
 
 /* ===================== отрисовка списка ===================== */
@@ -1457,8 +1555,8 @@ async function openBlock(b){
 
   // заголовок — редактируемое поле (пишется в title: перевода); метка — id блока
   els.bhTitle.value = b.title || "";
-  els.bhTitle.placeholder = b.trHandle ? "Заголовок…" : (b.label + " (нет перевода)");
-  els.bhTitle.disabled = !b.trHandle;
+  els.bhTitle.placeholder = (state.mode === "library" || b.trHandle) ? "Заголовок…" : (b.label + " (нет перевода)");
+  els.bhTitle.disabled = state.mode !== "library" && !b.trHandle;
   els.bhLabel.textContent = b.label;
 
   els.emptyState.hidden = true;
@@ -1494,11 +1592,13 @@ async function openBlock(b){
    Возвращаем блоки с символьными смещениями в исходном тексте. */
 const NOTE_OPEN_RE  = /^<!--\s*note\s*-->$/i;       // открытие непарной заметки
 const NOTE_CLOSE_RE = /^<!--\s*\/\s*note\s*-->$/i;  // закрытие непарной заметки
+// якорь сектора формата читалки: <!-- s005 --> или под-часть <!-- s005a -->
+const SECTOR_ANCHOR_RE = /^<!--\s*(s\d+)[a-z]?\s*-->$/i;
 function parseBlocks(text){
   const blocks = [];
-  let pos = 0, sectorIdx = 0, para = null, note = null;
+  let pos = 0, sectorIdx = 0, para = null, note = null, pendingId = null;
   const flush = () => {
-    if(para){ blocks.push({ type:"sector", kind:"para", level:0, idx:sectorIdx++, start:para.start, end:para.end }); para = null; }
+    if(para){ blocks.push({ type:"sector", kind:"para", level:0, idx:sectorIdx++, id:para.id || null, start:para.start, end:para.end }); para = null; }
   };
   const parts = text.split("\n");
   for(let i = 0; i < parts.length; i++){
@@ -1516,6 +1616,10 @@ function parseBlocks(text){
     }
     if(NOTE_OPEN_RE.test(t)){ flush(); note = { type:"note", start, end }; continue; }
     if(t === ""){ flush(); blocks.push({ type:"blank", start, end }); continue; }
+    // якорь sNNN — служебная строка (бледная), задаёт ID следующему сектору:
+    // парность между языками идёт по этому ID, а не по порядку
+    const sm = t.match(SECTOR_ANCHOR_RE);
+    if(sm){ flush(); pendingId = sm[1].toLowerCase(); blocks.push({ type:"comment", start, end, text:t }); continue; }
     if(/^<!--[\s\S]*-->$/.test(t)){ flush(); blocks.push({ type:"comment", start, end, text:t }); continue; }
     const h = raw.match(/^(#{1,6})\s+(.*)$/);
     // Заголовок ПОКАЗЫВАЕМ, но сектором не считаем: в арабском оригинале его нет,
@@ -1523,22 +1627,25 @@ function parseBlocks(text){
     if(h){ flush(); blocks.push({ type:"heading", level:h[1].length, start, end, text:h[2] }); continue; }
     // Строка-тег (целиком из #тегов, Obsidian) — служебная, тоже не сектор.
     if(/^#[\p{L}\p{N}_/-]+(\s+#[\p{L}\p{N}_/-]+)*$/u.test(t)){ flush(); blocks.push({ type:"tag", start, end, text:t }); continue; }
-    if(!para) para = { start, end }; else para.end = end;
+    if(!para){ para = { start, end, id: pendingId }; pendingId = null; } else para.end = end;
   }
   flush();
   if(note) blocks.push(note);            // незакрытая заметка — до конца текста
   return blocks;
 }
+// ключ сектора для парности: ID якоря (sNNN) если есть, иначе порядковый номер.
+// Так анкорные секторы парятся по ID между языками, а старые (без якорей) — по порядку.
+function secKey(b){ return b && b.id != null ? b.id : (b ? b.idx : null); }
 function sectorsOf(blocks){ return blocks.filter(b => b.type === "sector"); }
-function sectorRange(blocks, idx){
-  const s = sectorsOf(blocks).find(b => b.idx === idx);
+function sectorRange(blocks, key){
+  const s = sectorsOf(blocks).find(b => secKey(b) === key);
   return s ? [s.start, s.end] : null;
 }
 function sectorAtCaret(blocks, caret){
   const secs = sectorsOf(blocks);
-  for(const s of secs) if(caret >= s.start && caret <= s.end) return s.idx;
+  for(const s of secs) if(caret >= s.start && caret <= s.end) return secKey(s);
   let best = null;
-  for(const s of secs) if(s.end < caret) best = s.idx;   // ближайший предшествующий
+  for(const s of secs) if(s.end < caret) best = secKey(s);   // ближайший предшествующий
   return best;
 }
 
@@ -1667,11 +1774,16 @@ function makeEditor(slot, value){
   slot.body.innerHTML = "";
   const isSrc = slot.role === "source";
   const isFn = slot.role === "footnotes";
+  // направление: в library — по book.rtl для языка слота, иначе RTL только у оригинала
+  const isRtl = state.mode === "library"
+    ? (slot.role === "source" ? state.book.srcRtl : slot.role === "translation" ? state.book.transRtl : false)
+    : isSrc;
+  const dir = isRtl ? "rtl" : "ltr";
   const wrap = document.createElement("div"); wrap.className = "editor-wrap";
   const bd = document.createElement("div"); bd.className = "backdrop"; bd.setAttribute("aria-hidden","true");
-  bd.dir = isSrc ? "rtl" : "ltr";
+  bd.dir = dir;
   const ta = document.createElement("textarea");
-  ta.className = "editor"; ta.dir = isSrc ? "rtl" : "ltr"; ta.spellcheck = true;
+  ta.className = "editor"; ta.dir = dir; ta.spellcheck = true;
   ta.placeholder =
     isSrc ? "Оригинал…" :
     slot.role === "variant" ? "Вставьте вариант перевода…" :
@@ -1748,7 +1860,7 @@ function updateBackdrop(slot){
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
     else if(b.type === "note")
       inner = `<span class="bd-note">${inner}</span>`;             // непарная заметка
-    if(b.type === "sector" && b.idx === state.activeSector)
+    if(b.type === "sector" && secKey(b) === state.activeSector)
       inner = `<span class="sec-active">${inner}</span>`;
     html += inner;
     cursor = b.end;
@@ -1802,10 +1914,14 @@ function scrollSlotToSector(slot, ord){
   if(slot.pane && slot.pane.classList.contains("collapsed")) return;   // свёрнут в корешок — не видно
   const secs = sectorsOf(parseBlocks(slot.editor.value));
   if(!secs.length) return;
-  let sec = secs.find(s => s.idx === ord);
+  let sec = secs.find(s => secKey(s) === ord);
   if(!sec){
+    // нет сектора с таким ключом — ближайший по номеру (число из sNNN или idx)
+    const num = k => typeof k === "number" ? k : parseInt(String(k).replace(/^s/i, ""), 10);
+    const target = num(ord);
+    if(!Number.isFinite(target)) return;
     let best = secs[0];
-    for(const s of secs) if(Math.abs(s.idx - ord) < Math.abs(best.idx - ord)) best = s;
+    for(const s of secs) if(Math.abs(num(secKey(s)) - target) < Math.abs(num(secKey(best)) - target)) best = s;
     sec = best;
   }
   const top = caretTopInBackdrop(slot.backdrop, sec.start);
@@ -1949,7 +2065,13 @@ async function loadSlotFromDisk(slot, b){
     slot.fileHandle = b.srcHandle || null; slot.savedText = text;
     makeEditor(slot, text); applyDraftIfAny(slot, b);
   } else if(slot.role === "translation"){
-    if(b.trHandle){
+    if(state.mode === "library"){
+      // формат читалки: язык-файл сырой, без фронтматтера (title/status — в book.json)
+      let body = "";
+      if(b.trHandle){ try{ body = normNL(await readFile(b.trHandle)).replace(/^\n+/, "").replace(/\s+$/, ""); }catch{} }
+      slot.fileHandle = b.trHandle || null; slot.fmLines = null; slot.savedText = body;
+      makeEditor(slot, body); applyDraftIfAny(slot, b);
+    } else if(b.trHandle){
       let body = "", fmLines = ["title: ", "status: todo", "glossary_checked: false"];
       try{
         const p = splitFrontmatter(await readFile(b.trHandle));
@@ -2035,9 +2157,10 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   // шапка блока: статус/сохранение работают с основным переводом
   const ts = slots.find(s => s.role === "translation") || null;
   state.transSlot = ts;
-  const hasFile = !!(ts && ts.fileHandle);
-  els.statusBar.hidden = !hasFile;
-  renderStatusBar(hasFile ? b.status : null);
+  // в library статус — у главы (в book.json), файл не обязателен; в папочном — по файлу
+  const showStatus = state.mode === "library" ? !!ts : !!(ts && ts.fileHandle);
+  els.statusBar.hidden = !showStatus;
+  renderStatusBar(showStatus ? b.status : null);
   updateDirtyUI();
 
   // контролы запроса и сохранения видны только если в окне есть редактируемое
@@ -2152,7 +2275,23 @@ function hasLiveMarker(text){ return MARKER_RE().test(text); }
 async function saveTranslation(slot){
   if(state.current && state.current.draft) return commitDraft();
   const ts = slot || state.transSlot;
-  if(!ts || !ts.fileHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
+  if(!ts){ return; }
+  // library: пишем сырой текст в <transLang>/<file>, без фронтматтера; файла может
+  // ещё не быть (новый перевод главы) — создаём
+  if(state.mode === "library"){
+    if(!ts.editor){ return; }
+    if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+    const b = state.current;
+    try{
+      let h = ts.fileHandle;
+      if(!h){ h = await state.fs.getFile("translation", `${b.label}.md`, true); ts.fileHandle = h; b.trHandle = h; }
+      await writeFile(h, ts.editor.value);
+      ts.savedText = ts.editor.value; clearDraft(ts); updateDirtyUI();
+      toast("Сохранено");
+    }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); }
+    return;
+  }
+  if(!ts.fileHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   const body = ts.editor.value;
   try{
@@ -2210,17 +2349,23 @@ async function saveDraftByKey(key){
     await writeFile(h, body);   // оригинал без фронтматтера — тело как есть
   } else if(sk === "translation"){
     const h = await state.fs.getFile("translation", `${label}.md`, true);
-    // фронтматтер читаем свежим из файла — черновик хранит только тело
-    let fmLines = ["title: ", "status: todo", "glossary_checked: false"];
-    try{
-      const p = splitFrontmatter(await readFile(h));
-      if(p.fmLines) fmLines = p.fmLines;
-    }catch{}
-    await writeFile(h, buildTranslation(fmLines, body));
-    const b = state.blocks.find(x => x.label === label);
-    if(b && !b.trHandle){
-      b.trHandle = h; b.status = fmGet(fmLines, "status") || "todo";
-      renderCounts(); renderList();
+    if(state.mode === "library"){
+      await writeFile(h, body);   // формат читалки — сырой текст, без фронтматтера
+      const b = state.blocks.find(x => x.label === label);
+      if(b && !b.trHandle){ b.trHandle = h; renderList(); }
+    } else {
+      // фронтматтер читаем свежим из файла — черновик хранит только тело
+      let fmLines = ["title: ", "status: todo", "glossary_checked: false"];
+      try{
+        const p = splitFrontmatter(await readFile(h));
+        if(p.fmLines) fmLines = p.fmLines;
+      }catch{}
+      await writeFile(h, buildTranslation(fmLines, body));
+      const b = state.blocks.find(x => x.label === label);
+      if(b && !b.trHandle){
+        b.trHandle = h; b.status = fmGet(fmLines, "status") || "todo";
+        renderCounts(); renderList();
+      }
     }
   } else if(sk.startsWith("variant|")){
     const h = await state.fs.getFile("variants", `${label} ${sk.slice("variant|".length)}.md`, true);
@@ -2280,10 +2425,22 @@ async function startTranslation(){
 // (файлы НЕ переименовываются)
 async function saveTitle(){
   const b = state.current;
-  if(!b || !b.trHandle) return;
+  if(!b) return;
   const newTitle = els.bhTitle.value.trim();
   if(newTitle === (b.title || "")) return;
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  // library: заголовок главы живёт в book.json (по языку перевода)
+  if(state.mode === "library"){
+    try{
+      if(b.chapter){ b.chapter.title = b.chapter.title || {}; b.chapter.title[state.book.transLang || state.book.srcLang] = newTitle; }
+      b.title = newTitle;
+      await saveBookJson();
+      updateDirtyUI(); renderList();
+      toast("Заголовок сохранён");
+    }catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+    return;
+  }
+  if(!b.trHandle) return;
   const ts = state.transSlot;
   try{
     let fmLines, body;
@@ -2407,6 +2564,7 @@ function nextSplitLabel(base){
 // Перевод режется по сектору с тем же порядковым номером. Варианты не трогаем.
 async function splitBlock(b){
   if(!b) return;
+  if(state.mode === "library"){ toast("Деление главы в режиме книги пока не поддерживается", true); return; }
   if(!b.srcHandle){ toast("В этом разделе нет оригинала — делить нечего", true); return; }
   if(state.activeSector == null){
     toast("Выделите сектор: поставьте курсор в абзац оригинала, с которого начнётся новый раздел", true); return;
@@ -2816,12 +2974,32 @@ function saveSettings(){
 
 async function setStatus(newStatus){
   const b = state.current, ts = state.transSlot;
-  if(!b || !ts || !ts.fileHandle) return;
+  if(!b || !ts) return;
 
-  if(newStatus === "verified" && hasLiveMarker(ts.editor.value)){
+  if(newStatus === "verified" && ts.editor && hasLiveMarker(ts.editor.value)){
     toast("Нельзя ставить verified: в переводе остались открытые вопросы ==?…==", true);
     return;
   }
+  // library: статус главы — в book.json (файл перевода может ещё не существовать)
+  if(state.mode === "library"){
+    b.status = newStatus;
+    if(b.chapter) b.chapter.status = newStatus;
+    renderStatusBar(newStatus);
+    if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+    try{
+      await saveBookJson();
+      renderCounts();
+      for(const li of els.list.children){
+        if(li.dataset.label === b.label){
+          const dot = li.querySelector(".dot");
+          if(dot){ dot.className = "dot " + newStatus; dot.title = newStatus; }
+        }
+      }
+      toast("Статус: " + newStatus);
+    }catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+    return;
+  }
+  if(!ts.fileHandle) return;
   ts.fmLines = fmSet(ts.fmLines, "status", newStatus);
   b.status = newStatus;
   renderStatusBar(newStatus);
@@ -3305,6 +3483,7 @@ els.headsToggle.addEventListener("click", () => {
 })();
 
 els.openBtn.addEventListener("click", pickFolder);
+els.openBookBtn.addEventListener("click", pickBook);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.closeFolderBtn.addEventListener("click", closeFolder);
 els.ghOpenBtn.addEventListener("click", openGhModal);
@@ -3563,7 +3742,7 @@ window.addEventListener("beforeunload", (e) => {
 (async function init(){
   // без File System Access (мобильные и прочие браузеры) локальная папка
   // недоступна, но репозиторий GitHub работает — приложение не отключаем
-  if(!window.showDirectoryPicker) els.openBtn.hidden = true;
+  if(!window.showDirectoryPicker){ els.openBtn.hidden = true; els.openBookBtn.hidden = true; }
   state.layout = loadLayout();
   applySidePrefs();
   applyHeadsHidden();
