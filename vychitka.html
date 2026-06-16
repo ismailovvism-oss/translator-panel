@@ -487,6 +487,7 @@
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
+  <button id="publishBtn" class="btn" title="Опубликовать этот папочный репозиторий (source/translation) как книгу читалки: выбрать папку books/ → id/языки → запись в формат контракта (sNNN, fnN, pN), book.json и реестр" hidden>Опубликовать в библиотеку</button>
   <span class="md-tools" id="mdTools" hidden>
     <span class="md-group">
       <button data-md="bold" title="Жирный: **текст** (Ctrl+B)"><b>Ж</b></button>
@@ -832,7 +833,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), anchorBtn: $("anchorBtn"),
+  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), anchorBtn: $("anchorBtn"), publishBtn: $("publishBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
@@ -1246,6 +1247,7 @@ async function useBook(handle){
   els.reopenBtn.hidden = true;
   els.closeFolderBtn.hidden = false;
   els.newBlockBtn.hidden = false;
+  els.publishBtn.hidden = true;       // в режиме книги формат уже родной — публиковать нечего
   els.mdTools.hidden = false;
   await scan();
 }
@@ -1255,6 +1257,142 @@ async function saveBookJson(){
   const w = await fh.createWritable();
   await w.write(JSON.stringify(state.book.data, null, 2) + "\n");
   await w.close();
+}
+
+/* ===== Опубликовать в библиотеку: папочный репозиторий → книга читалки =====
+   Порт логики tools/import-tam.js читалки: source/translation (формат вычитки) →
+   контракт (<!-- sNNN -->, заголовки в s00Na/b жирным, [^N]+<!-- fnN -->,
+   <!-- pN -->, раз-линковка вики, выброс арабских строк из ru). */
+const PUB_PAGE_RE = /^<!--\s*(?:ص|p)\s*:?\s*([0-9٠-٩]+)\s*-->$/;
+const pubWestern = s => s.replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660));
+const pubDelink = s => s.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/\[\[([^\]]+)\]\]/g, "$1");
+const PUB_AR = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+function pubIsArabic(l){
+  if(/^\s*۞/.test(l)) return true;
+  const letters = [...l].filter(ch => /\p{L}/u.test(ch));
+  return letters.length ? letters.filter(ch => PUB_AR.test(ch)).length / letters.length > 0.7 : false;
+}
+function pubParse(body){
+  const lines = pubDelink(body).split(/\r?\n/);
+  let cut = lines.length;
+  for(let i = 0; i < lines.length; i++) if(/^\s*\[\^[^\]]+\]:/.test(lines[i])){ cut = i; break; }
+  let main = lines.slice(0, cut);
+  while(main.length && (main[main.length-1].trim() === "" || main[main.length-1].trim() === "---")) main.pop();
+  const blocks = []; let cur = null, pendingPage = null;
+  const flush = () => { if(cur && cur.lines.length) blocks.push(cur); cur = null; };
+  for(const raw of main){
+    const l = raw.replace(/\s+$/, "");
+    if(l.trim() === "" || l.trim() === "---"){ flush(); continue; }
+    const pm = l.trim().match(PUB_PAGE_RE);
+    if(pm){ pendingPage = parseInt(pubWestern(pm[1]), 10); continue; }
+    const hm = l.match(/^(#{1,6})\s+(.*)$/);
+    if(hm){ flush(); const hb = { kind:"heading", lines:[hm[2].trim()] }; if(pendingPage != null){ hb.page = pendingPage; pendingPage = null; } blocks.push(hb); continue; }
+    if(!cur) cur = { kind:"text", lines:[] };
+    if(pendingPage != null && cur.page == null){ cur.page = pendingPage; pendingPage = null; }
+    cur.lines.push(l);
+  }
+  flush();
+  const defs = []; let d = null;
+  for(const raw of lines.slice(cut)){
+    const m = raw.match(/^\s*\[\^([^\]]+)\]:\s?(.*)$/);
+    if(m){ d = { key:m[1], lines:[m[2]] }; defs.push(d); }
+    else if(d) d.lines.push(raw);
+  }
+  for(const def of defs) while(def.lines.length && def.lines[def.lines.length-1].trim() === "") def.lines.pop();
+  return { blocks, defs };
+}
+function pubConvert(body, { dropArabic = false } = {}){
+  const { blocks, defs } = pubParse(body);
+  const order = [], seen = new Set();
+  const note = k => { if(!seen.has(k)){ seen.add(k); order.push(k); } };
+  for(const b of blocks) for(const l of b.lines) for(const m of l.matchAll(/\[\^([^\]]+)\]/g)) note(m[1]);
+  for(const def of defs) note(def.key);
+  const map = new Map(); order.forEach((k, i) => map.set(k, i + 1));
+  const renum = s => s.replace(/\[\^([^\]]+)\]/g, (w, k) => map.has(k) ? `[^${map.get(k)}]` : w);
+  const textLines = b => (dropArabic ? b.lines.filter(l => !pubIsArabic(l)) : b.lines).map(renum);
+
+  const sectors = []; let heads = [], pendingPage = null;
+  for(const b of blocks){
+    if(b.kind === "heading"){ if(b.page != null && pendingPage == null) pendingPage = b.page; heads.push(["**" + renum(b.lines[0]) + "**"]); continue; }
+    const page = (b.page != null) ? b.page : pendingPage; pendingPage = null;
+    sectors.push({ page, parts:[...heads, textLines(b)] }); heads = [];
+  }
+  if(heads.length){ if(sectors.length) sectors[sectors.length-1].parts.push(...heads); else sectors.push({ page:pendingPage, parts:heads }); }
+
+  const out = []; let s = 0; const L = "abcdefghijklmnopqrstuvwxyz";
+  for(const sec of sectors){
+    if(sec.page != null) out.push(`<!-- p${sec.page} -->`);
+    s++; const base = `s${String(s).padStart(3, "0")}`;
+    if(sec.parts.length === 1){ out.push(`<!-- ${base} -->`); for(const l of sec.parts[0]) out.push(l); out.push(""); }
+    else sec.parts.forEach((pl, i) => { out.push(`<!-- ${base}${L[i]} -->`); for(const l of pl) out.push(l); out.push(""); });
+  }
+  for(const def of [...defs].sort((a, b) => map.get(a.key) - map.get(b.key))){
+    out.push(`<!-- fn${map.get(def.key)} -->`); for(const l of def.lines) out.push(renum(l)); out.push("");
+  }
+  return { content: out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", sectors: s };
+}
+// записать файл по пути [seg…] внутри dirHandle, создавая папки
+async function pubWrite(dirHandle, segs, content){
+  let dir = dirHandle;
+  for(const seg of segs.slice(0, -1)) dir = await dir.getDirectoryHandle(seg, { create: true });
+  const fh = await dir.getFileHandle(segs[segs.length-1], { create: true });
+  const w = await fh.createWritable(); await w.write(content); await w.close();
+}
+const RTL_CODES = ["ar", "he", "fa", "ur", "ps", "sd"];
+async function publishToLibrary(){
+  if(state.mode !== "folder"){ toast("«Опубликовать в библиотеку» — из папочного режима (source/translation)", true); return; }
+  if(!state.blocks.length){ toast("Нет блоков для публикации", true); return; }
+  let booksDir;
+  try{ booksDir = await window.showDirectoryPicker({ id: "vychitka-library", mode: "readwrite" }); }
+  catch(e){ if(e && e.name === "AbortError") return; toast("Не удалось открыть папку: " + e.message, true); return; }
+  const id = (prompt("ID книги (имя папки внутри books/), напр. «tawfiq»:", "") || "").trim();
+  if(!id) return;
+  if(BAD_NAME_RE.test(id)){ toast("Недопустимый id (нельзя / \\ : * ? \" < > |)", true); return; }
+  const srcLang = (prompt("Язык оригинала (код), напр. «ar»:", "ar") || "").trim();
+  if(!srcLang) return;
+  const transLang = (prompt("Язык перевода (код), напр. «ru». Пусто — без перевода:", "ru") || "").trim();
+
+  const chapters = []; const mismatches = [];
+  let bookTitle = "";
+  try{
+    for(const b of state.blocks){
+      const file = b.label + ".md";
+      let ru = { content:"", sectors:0 }, title = "";
+      if(transLang && b.trHandle){
+        const p = splitFrontmatter(await readFile(b.trHandle));
+        title = fmGet(p.fmLines, "title") || "";
+        ru = pubConvert(p.body.replace(/^\n+/, "").replace(/\s+$/, ""), { dropArabic: true });
+        await pubWrite(booksDir, [id, transLang, file], ru.content);
+      }
+      let ar = { content:"", sectors:0 };
+      if(b.srcHandle){ ar = pubConvert(await readFile(b.srcHandle), { dropArabic: false }); }
+      // оригинал выдаём только при точном посекторном паритете (иначе глава ru-only)
+      if(ar.sectors > 0 && (!transLang || ar.sectors === ru.sectors)){
+        await pubWrite(booksDir, [id, srcLang, file], ar.content);
+      } else if(b.srcHandle){
+        await pubWrite(booksDir, [id, srcLang, file], "<!-- оригинал главы ещё не выровнен посекторно (паритет правится в вычитке) -->\n");
+        if(transLang) mismatches.push(`${file}: ${srcLang}=${ar.sectors} ${transLang}=${ru.sectors}`);
+      }
+      const t = {}; if(transLang) t[transLang] = title || b.label;
+      chapters.push({ file, title: t });
+      if(!bookTitle && title) bookTitle = title;
+    }
+    const languages = transLang ? [srcLang, transLang] : [srcLang];
+    const book = {
+      bookId: id, title: { [transLang || srcLang]: bookTitle || id },
+      languages, rtl: RTL_CODES.includes(srcLang) ? [srcLang] : [], chapters,
+    };
+    await pubWrite(booksDir, [id, "book.json"], JSON.stringify(book, null, 2) + "\n");
+    // реестр библиотеки
+    let idx = { title: "Библиотека", books: [] };
+    try{ const fh = await booksDir.getFileHandle("index.json"); idx = JSON.parse(await (await fh.getFile()).text()); }catch{}
+    if(!Array.isArray(idx.books)) idx.books = [];
+    const prev = idx.books.find(x => x.id === id) || {};
+    idx.books = idx.books.filter(x => x.id !== id);
+    idx.books.push({ ...prev, id, base: `books/${id}/`, title: book.title, langs: languages });
+    await pubWrite(booksDir, ["index.json"], JSON.stringify(idx, null, 2) + "\n");
+  }catch(e){ console.error(e); toast("Ошибка публикации: " + e.message, true); return; }
+  toast(`Опубликовано: ${chapters.length} глав${mismatches.length ? `; без оригинала (нет паритета): ${mismatches.length}` : ""}`);
 }
 
 /* ---- черновик без папки: сразу даём редактируемые окна, папку выберем при
@@ -1270,6 +1408,7 @@ async function enterDraft(){
   els.mdTools.hidden = false;      // панель разметки доступна сразу
   els.newBlockBtn.hidden = true;
   els.closeFolderBtn.hidden = true;
+  els.publishBtn.hidden = true;
   els.rootName.innerHTML = "Черновик — «Сохранить» спросит папку";
   await renderSlots({ reload: true });
   const ed = state.transSlot && state.transSlot.editor;
@@ -1295,6 +1434,7 @@ async function bindFolderFromDraft(){
   els.rootName.innerHTML = state.fs.title;
   els.reopenBtn.hidden = true;
   els.closeFolderBtn.hidden = false;
+  els.publishBtn.hidden = false;      // привязали папку (folder) — публикация доступна
   els.mdTools.hidden = false;
   els.newBlockBtn.hidden = false;
   return true;
@@ -1343,6 +1483,7 @@ async function storageReady(){
   els.reopenBtn.hidden = true;
   els.closeFolderBtn.hidden = !window.showDirectoryPicker;   // черновик нужен FSA
   els.newBlockBtn.hidden = false;
+  els.publishBtn.hidden = !window.showDirectoryPicker;       // публикация в книгу — нужен FSA для записи
   els.mdTools.hidden = false;
   await scan();
 }
@@ -3513,6 +3654,7 @@ els.headsToggle.addEventListener("click", () => {
 
 els.openBtn.addEventListener("click", pickFolder);
 els.openBookBtn.addEventListener("click", pickBook);
+els.publishBtn.addEventListener("click", publishToLibrary);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.closeFolderBtn.addEventListener("click", closeFolder);
 els.ghOpenBtn.addEventListener("click", openGhModal);
