@@ -24,6 +24,7 @@
     --st-review:   #2f6fb0;
     --st-verified: #3f8f54;
     --unsaved:     #8e52b4;   /* несохранённое — фиолетовый, не пересекается со статусами */
+    --note:        #3f7f93;   /* непарная заметка — приглушённый бирюзовый, не статус */
 
     --ui: "Segoe UI", system-ui, -apple-system, "Cantarell", "Noto Sans", sans-serif;
     --ru: "Iowan Old Style", "Palatino Linotype", "Cambria", Georgia, "Noto Serif", serif;
@@ -68,7 +69,13 @@
   .spacer{ flex:1 1 auto; }
 
   /* панель вставки разметки — действует на окно, в котором стоит курсор */
-  .md-tools{ display:inline-flex; gap:3px; }
+  /* редакторская панель: сгруппированные кнопки в едином контейнере */
+  .md-tools{
+    display:inline-flex; align-items:center; gap:5px;
+    padding:3px 6px; border:1px solid var(--line); border-radius:8px; background:var(--bg);
+  }
+  .md-group{ display:inline-flex; gap:3px; }
+  .md-sep{ width:1px; align-self:stretch; min-height:16px; background:var(--line); }
   .md-tools button{
     border:1px solid var(--line); background:#fff; color:var(--ink-soft);
     border-radius:6px; cursor:pointer; font-size:12px; padding:4px 8px; min-width:28px;
@@ -97,6 +104,13 @@
     font-size:13px; background:#fff; color:var(--ink); font-family:inherit;
   }
   .pop-actions{ display:flex; gap:8px; justify-content:flex-end; }
+  /* выбор типа callout — сетка кнопок */
+  .callout-pop{ width:auto; max-width:340px; flex-direction:row; flex-wrap:wrap; gap:6px; }
+  .callout-pop button{
+    padding:5px 9px; border:1px solid var(--line); border-radius:7px;
+    background:#fff; color:var(--ink); font-size:12px; cursor:pointer; font-family:inherit;
+  }
+  .callout-pop button:hover{ background:var(--sel); }
 
   /* ---------- сетка ---------- */
   .layout{ flex:1 1 auto; display:grid; grid-template-columns:var(--side-w, 300px) 6px 1fr; min-height:0; }
@@ -422,6 +436,15 @@
   .pane[data-role="source"] .backdrop .bd-head{ box-shadow:inset -3px 0 0 0 var(--accent); }
   /* бледная служебная строка <!-- ... --> в подложке (текст виден в поле) */
   .backdrop .bd-comment{ background:rgba(0,0,0,.05); border-radius:2px; }
+  /* непарная заметка: текст виден, но абзац не считается сектором.
+     Делаем заметным «полем другого цвета» — плотная заливка + рамка + полоса
+     слева. Метрики (шрифт/размер) не трогаем: подложка и textarea совпадают. */
+  .backdrop .bd-note{
+    display:inline-block; width:100%;   /* сплошное поле: заливка без полос между строк */
+    background:rgba(63,127,147,.06);     /* чуть бледнее фона — низкий контраст */
+    box-shadow:inset 0 0 0 1px rgba(63,127,147,.20);   /* тонкая граница */
+    border-radius:3px;
+  }
 
   /* тост / предупреждение */
   .toast{
@@ -459,16 +482,31 @@
   <button id="ghOpenBtn" class="btn" title="Открыть репозиторий перевода на GitHub — работает по ссылке и на телефоне">Открыть с GitHub</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
+  <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть папку — вернуться к пустым редактируемым окнам (черновику)" hidden>Закрыть папку</button>
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
   <span class="md-tools" id="mdTools" hidden>
-    <button data-md="bold" title="Жирный: **текст** (Ctrl+B)"><b>Ж</b></button>
-    <button data-md="italic" title="Курсив: *текст* (Ctrl+I)"><i>К</i></button>
-    <button data-md="u" title="Подчёркнутый: &lt;u&gt;текст&lt;/u&gt; (Ctrl+U)"><u>Ч</u></button>
-    <button data-md="footnote" title="Вставить сноску: [^N] в месте курсора + заготовка определения в конце текста">Сноска</button>
-    <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
-    <button data-md="page" title="Маркер страницы: &lt;!-- ص: N --&gt; отдельной строкой над абзацем. Только в оригинале; нумерация сквозная по тому. Номер подставляется следующим — поправьте, если нужно">стр.</button>
+    <span class="md-group">
+      <button data-md="bold" title="Жирный: **текст** (Ctrl+B)"><b>Ж</b></button>
+      <button data-md="italic" title="Курсив: *текст* (Ctrl+I)"><i>К</i></button>
+      <button data-md="u" title="Подчёркнутый: &lt;u&gt;текст&lt;/u&gt; (Ctrl+U)"><u>Ч</u></button>
+    </span>
+    <span class="md-sep"></span>
+    <span class="md-group">
+      <button data-md="heading" title="Заголовок — строка с «## » (крупный подзаголовок; не считается сектором при сверке)">Заголовок</button>
+      <button data-md="quote" title="Цитата — строки с «&gt; » в начале (блочная цитата для слов учёных и приводимых цитат)">❝ Цитата</button>
+      <button data-md="ul" title="Маркированный список — строки с «- »">• Список</button>
+      <button data-md="ol" title="Нумерованный список — строки «1. », «2. »…">1. Список</button>
+      <button data-md="callout" title="Callout (в стиле Obsidian): &gt; [!тип] … — типизированная выноска (цитата, примечание, важное и т. д.)">Callout ▾</button>
+    </span>
+    <span class="md-sep"></span>
+    <span class="md-group">
+      <button data-md="footnote" title="Вставить сноску: [^N] в месте курсора + заготовка определения в конце текста">Сноска</button>
+      <button data-md="page" title="Маркер страницы: &lt;!-- ص: N --&gt; отдельной строкой над абзацем. Только в оригинале; нумерация сквозная по тому. Номер подставляется следующим — поправьте, если нужно">стр.</button>
+      <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
+      <button data-md="note" title="Заметка — непарный сектор: текст виден (бирюзовая полоса), но абзацы внутри не считаются за абзац при сверке. Работает в любом окне, включая оригинал. Оборачивает выделение в &lt;!-- note --&gt; … &lt;!-- /note --&gt;">Заметка</button>
+    </span>
   </span>
   <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
@@ -491,6 +529,8 @@
       <button id="popAdd" class="btn primary">Добавить</button>
     </div>
   </div>
+
+  <div class="pop callout-pop" id="calloutPop" hidden></div>
 </div>
 
 <div class="layout">
@@ -788,6 +828,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
+  closeFolderBtn: $("closeFolderBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
@@ -799,7 +840,7 @@ const els = {
   setSave: $("setSave"), setCancel: $("setCancel"),
   reqModal: $("reqModal"), reqTitle: $("reqTitle"), reqModel: $("reqModel"),
   reqPrompt: $("reqPrompt"), reqStatus: $("reqStatus"), reqSend: $("reqSend"), reqCancel: $("reqCancel"),
-  pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"),
+  pop: $("slotPop"), popRole: $("popRole"), popLabel: $("popLabel"), calloutPop: $("calloutPop"),
   popLabelWrap: $("popLabelWrap"), popAdd: $("popAdd"), popCancel: $("popCancel"),
   filter: $("filter"), list: $("blockList"),
   progressWrap: $("progressWrap"), progressText: $("progressText"), progressBar: $("progressBar"),
@@ -1153,13 +1194,131 @@ async function useRoot(handle){
   await storageReady();
 }
 
+/* ---- черновик без папки: сразу даём редактируемые окна, папку выберем при
+   первом сохранении (тогда же создаём блок и переходим в обычный режим) ---- */
+async function enterDraft(){
+  state.fs = null; state.rootHandle = null; state.blocks = [];
+  state.drafts.clear();
+  state.current = { label: "", title: "", status: null, srcHandle: null, trHandle: null, draft: true };
+  els.list.innerHTML = "";
+  els.emptyState.hidden = true;
+  els.head.hidden = true;          // шапка блока — без метки/статуса в черновике
+  els.panes.hidden = false;
+  els.mdTools.hidden = false;      // панель разметки доступна сразу
+  els.newBlockBtn.hidden = true;
+  els.closeFolderBtn.hidden = true;
+  els.rootName.innerHTML = "Черновик — «Сохранить» спросит папку";
+  await renderSlots({ reload: true });
+  const ed = state.transSlot && state.transSlot.editor;
+  if(ed) ed.focus();
+}
+
+// привязать папку к черновику: выбрать корень, при необходимости создать подпапки
+async function bindFolderFromDraft(){
+  let handle;
+  try{ handle = await window.showDirectoryPicker({ id: "vychitka-root", mode: "readwrite" }); }
+  catch(e){ if(e && e.name === "AbortError") return false; console.error(e); toast("Не удалось открыть папку: " + e.message, true); return false; }
+  let src, tr, varDir = null;
+  try{
+    src = await handle.getDirectoryHandle("source", { create: true });
+    tr  = await handle.getDirectoryHandle("translation", { create: true });
+  }catch(e){ console.error(e); toast("Не удалось создать подпапки: " + e.message, true); return false; }
+  try{ varDir = await handle.getDirectoryHandle("variants"); }catch{ varDir = null; }
+  try{ await IDB.set("root", handle); }catch{}
+  state.rootHandle = handle;
+  state.fs = localAdapter(handle, { source: src, translation: tr, variants: varDir });
+  try{ localStorage.setItem(LAST_MODE_KEY, "local"); }catch{}
+  els.rootName.innerHTML = state.fs.title;
+  els.reopenBtn.hidden = true;
+  els.closeFolderBtn.hidden = false;
+  els.mdTools.hidden = false;
+  els.newBlockBtn.hidden = false;
+  return true;
+}
+
+// сохранение в черновике: выбрать папку (один раз), спросить метку, записать
+// содержимое окон в нужные подпапки и перейти на созданный блок
+async function commitDraft(){
+  if(!state.fs){
+    if(!(await bindFolderFromDraft())) return false;
+    await scan();   // узнать уже существующие блоки (для проверки занятости метки)
+  }
+  const raw = prompt("Метка блока — короткое имя файлов, напр. «390-393» или «Глава 1»:", "");
+  if(raw === null) return false;
+  const label = raw.trim();
+  const err = labelError(label, null);
+  if(err){ toast(err, true); return false; }
+
+  const get = (role) => { const s = state.slots.find(x => x.role === role); return s && s.editor ? s.editor.value : ""; };
+  try{
+    const sH = await state.fs.getFile("source", `${label}.md`, true);
+    await writeFile(sH, get("source"));
+    const tH = await state.fs.getFile("translation", `${label}.md`, true);
+    await writeFile(tH, buildTranslation(["title: ", "status: todo", "glossary_checked: false"], get("translation")));
+    for(const s of state.slots){
+      if(s.role === "variant" && s.editor && s.editor.value.trim()){
+        const vh = await state.fs.getFile("variants", `${label} ${s.label}.md`, true);
+        await writeFile(vh, s.editor.value);
+      }
+    }
+  }catch(e){ console.error(e); toast("Ошибка записи: " + e.message, true); return false; }
+
+  // переходим в обычный папочный режим на только что созданном блоке
+  state.drafts.clear();
+  state.current = null;
+  await scan();
+  const nb = state.blocks.find(b => b.label === label);
+  if(nb) await openBlock(nb);
+  toast("Сохранено в «" + label + "»");
+  return true;
+}
+
 // общий хвост подключения хранилища (локального или GitHub)
 async function storageReady(){
   els.rootName.innerHTML = state.fs.title;
   els.reopenBtn.hidden = true;
+  els.closeFolderBtn.hidden = !window.showDirectoryPicker;   // черновик нужен FSA
   els.newBlockBtn.hidden = false;
   els.mdTools.hidden = false;
   await scan();
+}
+
+// показать кнопку «переоткрыть» для хранилища из прошлого сеанса (если есть)
+async function refreshReopenButton(){
+  if(localStorage.getItem(LAST_MODE_KEY) === "github"){
+    const cfg = ghSavedCfg();
+    if(cfg && getGhToken()){
+      els.reopenBtn.hidden = false;
+      els.reopenBtn.textContent = "Открыть «" + cfg.owner + "/" + cfg.repo + "» (GitHub)";
+      return;
+    }
+  } else if(window.showDirectoryPicker){
+    try{
+      const saved = await IDB.get("root");
+      if(saved){
+        els.reopenBtn.hidden = false;
+        els.reopenBtn.textContent = "Открыть «" + saved.name + "»";
+        return;
+      }
+    }catch{}
+  }
+  els.reopenBtn.hidden = true;
+}
+
+// закрыть текущее хранилище и вернуться к черновику — пустым редактируемым окнам.
+// Перед закрытием автосохраняем всё (окна + черновики), чтобы ничего не потерять.
+// Папку не забываем: кнопка «переоткрыть» остаётся, чтобы вернуться обратно.
+async function closeFolder(){
+  if((state.current && anyDirty()) || state.drafts.size > 0){
+    await saveAll();
+    // если что-то не сохранилось (нет прав/ошибка записи) — не закрываем
+    if((state.current && anyDirty()) || state.drafts.size > 0){
+      toast("Не удалось сохранить все изменения — папка не закрыта", true);
+      return;
+    }
+  }
+  await enterDraft();
+  await refreshReopenButton();   // показать «переоткрыть» только что закрытого хранилища
 }
 
 /* ---- подключение GitHub ---- */
@@ -1308,8 +1467,16 @@ async function openBlock(b){
 
   await renderSlots({ reload: true });
 
-  // фокус в перевод, но курсор в начало — иначе браузер прокручивает к курсору,
-  // который после установки value стоит в конце текста
+  // открываем с начала ВСЕ окна: после установки value курсор встаёт в конец
+  // (поведение Chrome), и фокус/клик прокрутил бы к нему. Сбрасываем курсор и
+  // прокрутку во всех окнах, а не только в переводе.
+  for(const s of state.slots){
+    if(!s.editor) continue;
+    s.editor.setSelectionRange(0, 0);
+    s.editor.scrollTop = 0;
+    if(s.backdrop) s.backdrop.scrollTop = 0;
+  }
+  // фокус — в перевод, тоже с начала
   const ed = state.transSlot && state.transSlot.editor;
   if(ed){
     ed.focus();
@@ -1325,9 +1492,11 @@ async function openBlock(b){
    (`^#{1,6}\s+`, всегда отдельный сектор). Строки-комментарии <!-- ... -->
    сектором не считаются и пропускаются (рисуются бледно только в оригинале).
    Возвращаем блоки с символьными смещениями в исходном тексте. */
+const NOTE_OPEN_RE  = /^<!--\s*note\s*-->$/i;       // открытие непарной заметки
+const NOTE_CLOSE_RE = /^<!--\s*\/\s*note\s*-->$/i;  // закрытие непарной заметки
 function parseBlocks(text){
   const blocks = [];
-  let pos = 0, sectorIdx = 0, para = null;
+  let pos = 0, sectorIdx = 0, para = null, note = null;
   const flush = () => {
     if(para){ blocks.push({ type:"sector", kind:"para", level:0, idx:sectorIdx++, start:para.start, end:para.end }); para = null; }
   };
@@ -1337,6 +1506,15 @@ function parseBlocks(text){
     const start = pos, end = pos + raw.length;
     pos = end + 1;                       // +1 за символ перевода строки
     const t = raw.trim();
+    // внутри заметки ВСЁ — единый блок (заголовки, теги, пустые строки), до
+    // закрывающего фенса включительно; ничего из этого не считается сектором,
+    // поэтому посекторная парность с оригиналом не сдвигается
+    if(note){
+      note.end = end;
+      if(NOTE_CLOSE_RE.test(t)){ blocks.push(note); note = null; }
+      continue;
+    }
+    if(NOTE_OPEN_RE.test(t)){ flush(); note = { type:"note", start, end }; continue; }
     if(t === ""){ flush(); blocks.push({ type:"blank", start, end }); continue; }
     if(/^<!--[\s\S]*-->$/.test(t)){ flush(); blocks.push({ type:"comment", start, end, text:t }); continue; }
     const h = raw.match(/^(#{1,6})\s+(.*)$/);
@@ -1348,6 +1526,7 @@ function parseBlocks(text){
     if(!para) para = { start, end }; else para.end = end;
   }
   flush();
+  if(note) blocks.push(note);            // незакрытая заметка — до конца текста
   return blocks;
 }
 function sectorsOf(blocks){ return blocks.filter(b => b.type === "sector"); }
@@ -1567,6 +1746,8 @@ function updateBackdrop(slot){
       inner = `<span class="bd-comment">${inner}</span>`;          // бледная служебная строка
     else if(b.type === "heading")
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
+    else if(b.type === "note")
+      inner = `<span class="bd-note">${inner}</span>`;             // непарная заметка
     if(b.type === "sector" && b.idx === state.activeSector)
       inner = `<span class="sec-active">${inner}</span>`;
     html += inner;
@@ -1777,16 +1958,23 @@ async function loadSlotFromDisk(slot, b){
       }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); }
       slot.fileHandle = b.trHandle; slot.fmLines = fmLines; slot.savedText = body;
       makeEditor(slot, body); applyDraftIfAny(slot, b);
+    } else if(b.draft){
+      // черновик без хранилища — даём редактируемое поле, файл появится при сохранении
+      slot.fileHandle = null; slot.savedText = "";
+      slot.fmLines = ["title: ", "status: todo", "glossary_checked: false"];
+      makeEditor(slot, ""); applyDraftIfAny(slot, b);
     } else {
       slot.fileHandle = null; slot.fmLines = null; slot.savedText = "";
       makeStart(slot);
     }
   } else { // variant
     let text = "", h = null;
-    try{
-      h = await state.fs.getFile("variants", `${b.label} ${slot.label}.md`, false);
-      text = normNL(await readFile(h));
-    }catch{ h = null; text = ""; }
+    if(state.fs){
+      try{
+        h = await state.fs.getFile("variants", `${b.label} ${slot.label}.md`, false);
+        text = normNL(await readFile(h));
+      }catch{ h = null; text = ""; }
+    }
     slot.fileHandle = h; slot.savedText = text;
     makeEditor(slot, text); applyDraftIfAny(slot, b);
   }
@@ -1962,6 +2150,7 @@ function renderUnsavedPop(m){
 function hasLiveMarker(text){ return MARKER_RE().test(text); }
 
 async function saveTranslation(slot){
+  if(state.current && state.current.draft) return commitDraft();
   const ts = slot || state.transSlot;
   if(!ts || !ts.fileHandle){ toast("Нет файла перевода — сохранять некуда", true); return; }
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
@@ -1974,6 +2163,7 @@ async function saveTranslation(slot){
 }
 
 async function saveVariant(slot){
+  if(state.current && state.current.draft) return commitDraft();
   const b = state.current;
   if(!b || !slot) return;
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
@@ -1990,6 +2180,7 @@ async function saveVariant(slot){
 }
 
 async function saveSource(slot){
+  if(state.current && state.current.draft) return commitDraft();
   const b = state.current;
   if(!b || !slot) return;
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
@@ -2041,6 +2232,7 @@ async function saveDraftByKey(key){
 
 // сохранить всё несохранённое: живые окна текущего раздела + черновики остальных
 async function saveAll(){
+  if(state.current && state.current.draft) return commitDraft();
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
   let saved = 0; const failed = [];
   if(state.current){
@@ -2847,6 +3039,12 @@ function applyMdAction(kind){
   if(!s){ toast("Поставьте курсор в текст — вставка идёт в место курсора", true); return; }
   if(kind === "footnote"){ insertFootnote(s); return; }
   if(kind === "page"){ insertPageMarker(s); return; }
+  if(kind === "note"){ insertNote(s); return; }
+  if(kind === "quote"){ insertLinePrefix(s, "> "); return; }
+  if(kind === "heading"){ insertLinePrefix(s, "## "); return; }
+  if(kind === "ul"){ insertList(s, false); return; }
+  if(kind === "ol"){ insertList(s, true); return; }
+  if(kind === "callout"){ if(els.calloutPop.hidden) openCalloutPop(s); else closeCalloutPop(); return; }
   const [pre, post] = MD_WRAPS[kind];
   const ed = s.editor;
   const a = ed.selectionStart, b = ed.selectionEnd;
@@ -2878,6 +3076,99 @@ function insertPageMarker(slot){
   const numPos = lineStart + text.indexOf(num);
   ed.setSelectionRange(numPos, numPos + num.length);
   toast(`Маркер страницы ${num} — число выделено, поправьте при необходимости`);
+}
+
+// обернуть выделение в непарную заметку <!-- note --> … <!-- /note -->.
+// Текст остаётся видимым, но его абзацы не считаются секторами — посекторная
+// парность не сдвигается. Работает в любом окне (перевод, вариант, оригинал).
+// Фенсы ставятся отдельными строками.
+function insertNote(slot){
+  const ed = slot.editor;
+  const a = ed.selectionStart, b = ed.selectionEnd;
+  const v = ed.value;
+  const sel = v.slice(a, b) || "note";
+  const before = v.slice(0, a), after = v.slice(b);
+  const open = "<!-- note -->\n", close = "\n<!-- /note -->";
+  const lead = (before === "" || before.endsWith("\n")) ? "" : "\n";
+  const tail = (after === "" || after.startsWith("\n")) ? "" : "\n";
+  ed.setSelectionRange(a, b);
+  insertAtSelection(ed, lead + open + sel + close + tail);
+  // оставить выделенным текст заметки — удобно сразу печатать поверх
+  const innerStart = a + lead.length + open.length;
+  ed.setSelectionRange(innerStart, innerStart + sel.length);
+}
+
+// добавить строковый префикс («> » цитата, «## » заголовок) к строкам выделения
+// (или к текущей строке). Уже помеченные строки не дублируем — повторный клик
+// можно расширить до тумблера позже. Через execCommand — родная отмена сохраняется.
+function insertLinePrefix(slot, prefix){
+  const ed = slot.editor;
+  const v = ed.value;
+  const a = ed.selectionStart, b = ed.selectionEnd;
+  const lineStart = v.lastIndexOf("\n", a - 1) + 1;
+  let lineEnd = v.indexOf("\n", b);
+  if(lineEnd === -1) lineEnd = v.length;
+  const block = v.slice(lineStart, lineEnd);
+  const out = block.split("\n").map(l => l.startsWith(prefix) ? l : prefix + l).join("\n");
+  ed.setSelectionRange(lineStart, lineEnd);
+  insertAtSelection(ed, out);
+  ed.setSelectionRange(lineStart, lineStart + out.length);
+}
+
+// callout (выноска в стиле Obsidian): > [!тип] заголовок \n > тело.
+// Тип произвольный — парсер (вычитки и читалки) трактует [!тип] обобщённо,
+// неизвестный тип деградирует мягко. Полный набор стандартных типов — в пикере.
+const CALLOUT_TYPES = [
+  ["quote","Цитата"], ["note","Примечание"], ["info","Инфо"], ["tip","Совет"],
+  ["important","Важное"], ["warning","Предупреждение"], ["success","Готово"],
+  ["question","Вопрос"], ["failure","Ошибка"], ["danger","Опасно"],
+  ["example","Пример"], ["abstract","Резюме"],
+];
+let calloutTargetSlot = null;
+function openCalloutPop(slot){
+  calloutTargetSlot = slot;
+  els.calloutPop.innerHTML = "";
+  for(const [type, label] of CALLOUT_TYPES){
+    const b = document.createElement("button");
+    b.type = "button"; b.dataset.callout = type; b.textContent = label; b.title = `> [!${type}]`;
+    els.calloutPop.appendChild(b);
+  }
+  els.calloutPop.hidden = false;
+}
+function closeCalloutPop(){ els.calloutPop.hidden = true; calloutTargetSlot = null; }
+function insertCallout(slot, type){
+  const ed = slot.editor;
+  const v = ed.value;
+  const a = ed.selectionStart, b = ed.selectionEnd;
+  const sel = v.slice(a, b);
+  const before = v.slice(0, a), after = v.slice(b);
+  const lead = (before === "" || before.endsWith("\n")) ? "" : "\n";
+  const tail = (after === "" || after.startsWith("\n")) ? "" : "\n";
+  const header = `> [!${type}] `;
+  const body = sel ? "\n" + sel.split("\n").map(l => "> " + l).join("\n") : "";
+  ed.setSelectionRange(a, b);
+  insertAtSelection(ed, lead + header + body + tail);
+  // курсор после «[!тип] » — место для заголовка выноски
+  const headPos = a + lead.length + header.length;
+  ed.setSelectionRange(headPos, headPos);
+}
+
+// список по выделенным строкам: маркированный «- » или нумерованный «1. », «2. »…
+function insertList(slot, ordered){
+  const ed = slot.editor;
+  const v = ed.value;
+  const a = ed.selectionStart, b = ed.selectionEnd;
+  const lineStart = v.lastIndexOf("\n", a - 1) + 1;
+  let lineEnd = v.indexOf("\n", b);
+  if(lineEnd === -1) lineEnd = v.length;
+  let n = 0;
+  const out = v.slice(lineStart, lineEnd).split("\n").map(l => {
+    if(ordered){ n++; return /^\d+\.\s/.test(l) ? l : `${n}. ${l}`; }
+    return l.startsWith("- ") ? l : `- ${l}`;
+  }).join("\n");
+  ed.setSelectionRange(lineStart, lineEnd);
+  insertAtSelection(ed, out);
+  ed.setSelectionRange(lineStart, lineStart + out.length);
 }
 
 // свободный числовой id сноски: максимум из [^N] в тексте + 1
@@ -3015,6 +3306,7 @@ els.headsToggle.addEventListener("click", () => {
 
 els.openBtn.addEventListener("click", pickFolder);
 els.reopenBtn.addEventListener("click", reopenFolder);
+els.closeFolderBtn.addEventListener("click", closeFolder);
 els.ghOpenBtn.addEventListener("click", openGhModal);
 els.ghCancel.addEventListener("click", closeGhModal);
 els.ghModal.addEventListener("click", (e) => { if(e.target === els.ghModal) closeGhModal(); });
@@ -3216,6 +3508,17 @@ els.popAdd.addEventListener("click", () => {
 els.popCancel.addEventListener("click", closePop);
 document.addEventListener("click", (e) => {
   if(!els.pop.hidden && !els.pop.contains(e.target) && e.target !== els.addSlotBtn) closePop();
+  // callout-пикер: клик вне его и не по кнопке «Callout» — закрыть
+  if(!els.calloutPop.hidden && !els.calloutPop.contains(e.target)
+     && !(e.target.closest && e.target.closest('button[data-md="callout"]'))) closeCalloutPop();
+});
+// клик по кнопке-типу не должен забирать фокус (нужно сохранить выделение в редакторе)
+els.calloutPop.addEventListener("mousedown", (e) => { if(e.target.closest("button")) e.preventDefault(); });
+els.calloutPop.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-callout]");
+  if(!b) return;
+  if(calloutTargetSlot) insertCallout(calloutTargetSlot, b.dataset.callout);
+  closeCalloutPop();
 });
 
 function anyModalOpen(){ return !els.modal.hidden || !els.settingsModal.hidden || !els.reqModal.hidden || !els.ghModal.hidden; }
@@ -3241,6 +3544,7 @@ document.addEventListener("keydown", (e) => {
     if(!els.findBar.hidden) closeFind();
     if(!els.unsavedPop.hidden) els.unsavedPop.hidden = true;
     if(!els.pop.hidden) closePop();
+    if(!els.calloutPop.hidden) closeCalloutPop();
     if(!els.modal.hidden) closeNewBlock();
     if(!els.settingsModal.hidden) closeSettings();
     if(!els.reqModal.hidden) closeRequest();
@@ -3264,22 +3568,11 @@ window.addEventListener("beforeunload", (e) => {
   applySidePrefs();
   applyHeadsHidden();
   renderModelsDatalist();
-  if(localStorage.getItem(LAST_MODE_KEY) === "github"){
-    const cfg = ghSavedCfg();
-    if(cfg && getGhToken()){
-      els.reopenBtn.hidden = false;
-      els.reopenBtn.textContent = "Открыть «" + cfg.owner + "/" + cfg.repo + "» (GitHub)";
-      return;
-    }
-  }
-  if(!window.showDirectoryPicker) return;
-  try{
-    const saved = await IDB.get("root");
-    if(saved){
-      els.reopenBtn.hidden = false;
-      els.reopenBtn.textContent = "Открыть «" + saved.name + "»";
-    }
-  }catch{}
+  // кнопка «переоткрыть» для хранилища, с которым работали в прошлый раз
+  await refreshReopenButton();
+  // без папки сразу открываем черновик — пустые редактируемые окна; папку
+  // выберем при первом сохранении. Доступно там, где есть File System Access.
+  if(window.showDirectoryPicker) await enterDraft();
 })();
 </script>
 </body>
