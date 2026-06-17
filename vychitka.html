@@ -2435,10 +2435,14 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   }
   state.slots = slots;
 
-  // одноязычная книга: окно оригинала не нужно — прячем (раскладку не меняем)
+  // одноязычная книга: окно оригинала не нужно; режим одного файла: оригинал и
+  // варианты некуда сохранять — прячем лишние окна (раскладку не меняем)
   const hideSource = state.mode === "library" && state.book && state.book.single;
+  const fileMode = state.mode === "file";
+  const hidden = (s) => (hideSource && s.role === "source")
+    || (fileMode && (s.role === "source" || s.role === "variant"));
   for(const slot of slots){
-    if(hideSource && slot.role === "source"){ slot.pane.hidden = true; continue; }
+    if(hidden(slot)){ slot.pane.hidden = true; continue; }
     const key = slotKeyOf(slot);
     const old = oldByKey.get(key);
     const mustLoad = reload || !old || (reloadKeys && reloadKeys.has(key));
