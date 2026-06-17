@@ -1266,9 +1266,13 @@ async function useBook(handle){
   const langs = Array.isArray(data.languages) ? data.languages : [];
   if(!langs.length){ toast("В book.json нет languages[]", true); return; }
   const rtl = Array.isArray(data.rtl) ? data.rtl : [];
-  const srcLang = langs[0], transLang = langs[1] || null;
+  // одноязычная книга: единственный язык кладём в главное окно (перевод), окно
+  // оригинала не нужно (его прячем в renderSlots). Двуязычная: [0]→оригинал, [1]→перевод.
+  const single = langs.length === 1;
+  const srcLang = single ? null : langs[0];
+  const transLang = single ? langs[0] : (langs[1] || null);
   // языковые папки: создаём при отсутствии, чтобы можно было начать новую книгу/перевод
-  const srcDir = await handle.getDirectoryHandle(srcLang, { create: true });
+  const srcDir = srcLang ? await handle.getDirectoryHandle(srcLang, { create: true }) : null;
   const transDir = transLang ? await handle.getDirectoryHandle(transLang, { create: true }) : null;
   let varDir = null;
   try{ varDir = await handle.getDirectoryHandle("variants"); }catch{ varDir = null; }
@@ -1276,8 +1280,9 @@ async function useBook(handle){
   state.fs = localAdapter(handle, { source: srcDir, translation: transDir, variants: varDir });
   state.mode = "library";
   state.book = {
-    handle, bookId: data.bookId || handle.name, data,
-    srcLang, transLang, srcRtl: rtl.includes(srcLang), transRtl: !!transLang && rtl.includes(transLang),
+    handle, bookId: data.bookId || handle.name, data, single,
+    srcLang, transLang,
+    srcRtl: !!srcLang && rtl.includes(srcLang), transRtl: !!transLang && rtl.includes(transLang),
   };
   try{ localStorage.setItem(LAST_MODE_KEY, "library"); }catch{}
   const tt = data.title && (data.title[transLang] || data.title[srcLang] || Object.values(data.title)[0]);
@@ -2430,7 +2435,10 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   }
   state.slots = slots;
 
+  // одноязычная книга: окно оригинала не нужно — прячем (раскладку не меняем)
+  const hideSource = state.mode === "library" && state.book && state.book.single;
   for(const slot of slots){
+    if(hideSource && slot.role === "source"){ slot.pane.hidden = true; continue; }
     const key = slotKeyOf(slot);
     const old = oldByKey.get(key);
     const mustLoad = reload || !old || (reloadKeys && reloadKeys.has(key));
