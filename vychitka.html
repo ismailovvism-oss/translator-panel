@@ -112,6 +112,9 @@
     background:#fff; color:var(--ink); font-size:12px; cursor:pointer; font-family:inherit;
   }
   .callout-pop button:hover{ background:var(--sel); }
+  /* меню «Открыть ▾» — вертикальный список */
+  .open-pop{ left:10px; right:auto; top:44px; width:auto; min-width:210px; gap:5px; }
+  .open-pop .btn{ text-align:left; width:100%; }
 
   /* ---------- сетка ---------- */
   .layout{ flex:1 1 auto; display:grid; grid-template-columns:var(--side-w, 300px) 6px 1fr; min-height:0; }
@@ -513,10 +516,13 @@
 
 <div class="topbar">
   <button id="sideToggle" class="btn" title="Свернуть/показать список блоков">☰</button>
-  <button id="openBtn" class="btn primary">Открыть папку</button>
-  <button id="ghOpenBtn" class="btn" title="Открыть репозиторий перевода на GitHub — работает по ссылке и на телефоне">Открыть с GitHub</button>
-  <button id="openBookBtn" class="btn" title="Открыть книгу читалки (папка с book.json: языковые папки + book.json) и править её на месте">Открыть книгу</button>
-  <button id="openFileBtn" class="btn" title="Открыть один .md-файл и править его напрямую (без папочной структуры). Сохранение пишет в тот же файл">Открыть файл</button>
+  <button id="openMenuBtn" class="btn primary" title="Открыть перевод: папку, репозиторий GitHub, книгу читалки или один файл">Открыть ▾</button>
+  <div class="pop open-pop" id="openPop" hidden>
+    <button id="openBtn" class="btn" title="Папка перевода: source/ + translation/ (+ variants/)">📁 Папка (source/translation)</button>
+    <button id="ghOpenBtn" class="btn" title="Репозиторий перевода на GitHub — работает по ссылке и на телефоне">🐙 GitHub-репозиторий</button>
+    <button id="openBookBtn" class="btn" title="Книга читалки: book.json + языковые папки — правка на месте">📖 Книга читалки</button>
+    <button id="openFileBtn" class="btn" title="Один .md-файл напрямую, без папок">📄 Один файл (.md)</button>
+  </div>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть текущую папку / книгу / файл — вернуться к пустым редактируемым окнам (черновику)" hidden>✕ Закрыть</button>
@@ -876,6 +882,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
+  openMenuBtn: $("openMenuBtn"), openPop: $("openPop"),
   closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), openFileBtn: $("openFileBtn"), anchorBtn: $("anchorBtn"), publishBtn: $("publishBtn"),
   linkBtn: $("linkBtn"), previewBtn: $("previewBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
@@ -4011,6 +4018,8 @@ els.headsToggle.addEventListener("click", () => {
   els.resizer.addEventListener("pointercancel", end);
 })();
 
+els.openMenuBtn.addEventListener("click", () => { els.openPop.hidden = !els.openPop.hidden; });
+els.openPop.addEventListener("click", (e) => { if(e.target.closest("button")) els.openPop.hidden = true; });
 els.openBtn.addEventListener("click", pickFolder);
 els.openBookBtn.addEventListener("click", pickBook);
 els.openFileBtn.addEventListener("click", pickFile);
@@ -4227,6 +4236,8 @@ document.addEventListener("click", (e) => {
   // callout-пикер: клик вне его и не по кнопке «Callout» — закрыть
   if(!els.calloutPop.hidden && !els.calloutPop.contains(e.target)
      && !(e.target.closest && e.target.closest('button[data-md="callout"]'))) closeCalloutPop();
+  // меню «Открыть»: клик вне его и не по самой кнопке — закрыть
+  if(!els.openPop.hidden && !els.openPop.contains(e.target) && e.target !== els.openMenuBtn) els.openPop.hidden = true;
 });
 // клик по кнопке-типу не должен забирать фокус (нужно сохранить выделение в редакторе)
 els.calloutPop.addEventListener("mousedown", (e) => { if(e.target.closest("button")) e.preventDefault(); });
@@ -4261,6 +4272,7 @@ document.addEventListener("keydown", (e) => {
     if(!els.unsavedPop.hidden) els.unsavedPop.hidden = true;
     if(!els.pop.hidden) closePop();
     if(!els.calloutPop.hidden) closeCalloutPop();
+    if(!els.openPop.hidden) els.openPop.hidden = true;
     if(!els.modal.hidden) closeNewBlock();
     if(!els.settingsModal.hidden) closeSettings();
     if(!els.reqModal.hidden) closeRequest();
