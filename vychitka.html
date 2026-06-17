@@ -447,6 +447,8 @@
   .ol-row{ display:flex; align-items:center; gap:1px; }
   .ol-jump{ flex:1 1 auto; min-width:0; text-align:left; background:none; border:none; color:var(--ink); cursor:pointer; padding:3px 6px; border-radius:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:inherit; }
   .ol-jump:hover{ background:var(--sel); }
+  .ol-fold{ flex:0 0 auto; width:16px; background:none; border:none; color:var(--ink-soft); cursor:pointer; font-size:10px; padding:0; }
+  .ol-fold.ol-nofold{ cursor:default; }
   .ol-mv{ flex:0 0 auto; background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:11px; padding:2px 3px; border-radius:4px; }
   .ol-mv:hover{ color:var(--accent); background:var(--sel); }
   .ol-l1 .ol-jump{ font-weight:600; }
@@ -2282,13 +2284,27 @@ function refreshOutline(){
   let html;
   if(src && src.editor){
     const heads = parseBlocks(src.editor.value).filter(b => b.type === "heading");
+    const collapsed = state.outlineCollapsed || (state.outlineCollapsed = new Set());
     if(heads.length){
-      html = heads.map(h =>
-        `<div class="ol-row ol-l${Math.min(h.level, 4)}">` +
-        `<button class="ol-jump" data-pos="${h.start}" title="Перейти к разделу">${esc(h.text || "(без названия)")}</button>` +
-        `<button class="ol-mv ol-up" data-pos="${h.start}" title="Выше">▲</button>` +
-        `<button class="ol-mv ol-down" data-pos="${h.start}" title="Ниже">▼</button>` +
-        `</div>`).join("");
+      let hideBelow = Infinity, rows = "";
+      for(let i = 0; i < heads.length; i++){
+        const h = heads[i];
+        if(h.level > hideBelow) continue;            // внутри свёрнутого раздела — скрыт
+        hideBelow = Infinity;
+        const hasKids = i + 1 < heads.length && heads[i + 1].level > h.level;
+        const key = h.level + ":" + h.text;
+        const isCol = collapsed.has(key);
+        if(hasKids && isCol) hideBelow = h.level;     // прятать глубже до следующего ≤ уровня
+        const fold = hasKids
+          ? `<button class="ol-fold" data-key="${esc(key)}" title="Свернуть/развернуть">${isCol ? "▸" : "▾"}</button>`
+          : `<span class="ol-fold ol-nofold"></span>`;
+        rows += `<div class="ol-row ol-l${Math.min(h.level, 4)}">` + fold +
+          `<button class="ol-jump" data-pos="${h.start}" title="Перейти к разделу">${esc(h.text || "(без названия)")}</button>` +
+          `<button class="ol-mv ol-up" data-pos="${h.start}" title="Выше">▲</button>` +
+          `<button class="ol-mv ol-down" data-pos="${h.start}" title="Ниже">▼</button>` +
+          `</div>`;
+      }
+      html = rows;
     } else html = "<p class='pv-empty'>Нет заголовков. Ставь «## …» — появится план.</p>";
   } else html = "<p class='pv-empty'>Поставьте курсор в окно письма.</p>";
   for(const o of outs){
@@ -4135,7 +4151,13 @@ els.reqModal.addEventListener("click", (e) => { if(e.target === els.reqModal) cl
 
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
-  // окно-структура: прыжок к разделу / перестановка раздела в ведомом окне письма
+  // окно-структура: свернуть/развернуть, прыжок, перестановка раздела
+  const olf = e.target.closest(".ol-fold");
+  if(olf && olf.dataset.key){
+    const set = state.outlineCollapsed || (state.outlineCollapsed = new Set());
+    const k = olf.dataset.key; set.has(k) ? set.delete(k) : set.add(k);
+    refreshOutline(); return;
+  }
   const olj = e.target.closest(".ol-jump");
   if(olj){ const s = fnFollowSlot(); if(s) jumpEditorTo(s, parseInt(olj.dataset.pos, 10)); return; }
   const olm = e.target.closest(".ol-mv");
