@@ -435,6 +435,8 @@
   .pane.view-result .editor-wrap{ display:none; }
   .pane.view-result .pane-preview{ flex:1 1 auto; }
   .pane-preview{ min-height:0; overflow:auto; padding:8px 14px; color:var(--ink); line-height:1.7; font-family:var(--ru); background:var(--panel); }
+  .pane-preview.result-view{ flex:1 1 auto; }       /* окно-результат: рендер во всю высоту */
+  .pane-preview.pv-ar{ font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane-preview p{ margin:.45em 0; }
   .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
@@ -547,6 +549,7 @@
         <option value="translation">Перевод (RU)</option>
         <option value="variant">Вариант</option>
         <option value="footnotes">Сноски</option>
+        <option value="result">Результат (рендер)</option>
       </select>
     </label>
     <label id="popLabelWrap" hidden>Ярлык источника
@@ -1161,6 +1164,7 @@ function normalizeSpec(s){
     };
   }
   if(s.role === "footnotes") return { role: "footnotes", collapsed };
+  if(s.role === "result") return { role: "result", collapsed };
   return null;
 }
 function loadLayout(){
@@ -1835,6 +1839,7 @@ function buildSlotDOM(spec, i){
     spec.role === "source" ? "Оригинал" :
     spec.role === "translation" ? "Перевод" :
     spec.role === "footnotes" ? "Сноски" :
+    spec.role === "result" ? "Результат" :
     "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
@@ -1842,8 +1847,10 @@ function buildSlotDOM(spec, i){
     spec.role === "source" ? "Оригинал · AR" :
     spec.role === "translation" ? "Перевод · RU" :
     spec.role === "footnotes" ? "Сноски" :
+    spec.role === "result" ? "Результат" :
     "Вариант · " + spec.label;
   if(spec.role === "footnotes") slot.fnTitleEl = label;   // подпись «Сноски · окно»
+  if(spec.role === "result") slot.resTitleEl = label;     // подпись «Результат · окно»
   head.appendChild(label);
 
   // у оригинала, перевода и варианта — выбор команды, модели и кнопка запроса.
@@ -1884,9 +1891,9 @@ function buildSlotDOM(spec, i){
     head.appendChild(take);
   }
 
-  // у каждого окна — одинаковая кнопка сохранения и индикатор несохранённого;
-  // окно пишет только в свой файл
-  {
+  // у каждого окна (кроме «результата» — он только показывает) одинаковая кнопка
+  // сохранения и индикатор несохранённого; окно пишет только в свой файл
+  if(spec.role !== "result"){
     const save = document.createElement("button");
     save.className = "mini-btn";
     save.dataset.action =
@@ -1923,15 +1930,16 @@ function buildSlotDOM(spec, i){
   spine.className = "spine"; spine.dataset.action = "expand"; spine.title = "Развернуть слот";
   spine.innerHTML = `<span class="spine-name">${esc(spineName)}</span><span>развернуть ▸</span>`;
 
-  // плавающая кнопка сохранения — видна в режиме чтения у окна с правками
-  const sfloat = document.createElement("button");
-  sfloat.className = "save-float";
-  sfloat.dataset.action = slot.saveEl.dataset.action;
-  sfloat.textContent = "Сохранить";
-  sfloat.title = slot.saveEl.title;
-
   pane.appendChild(head); pane.appendChild(body); pane.appendChild(spine);
-  pane.appendChild(sfloat);
+  // плавающая кнопка сохранения — видна в режиме чтения у окна с правками
+  if(slot.saveEl){
+    const sfloat = document.createElement("button");
+    sfloat.className = "save-float";
+    sfloat.dataset.action = slot.saveEl.dataset.action;
+    sfloat.textContent = "Сохранить";
+    sfloat.title = slot.saveEl.title;
+    pane.appendChild(sfloat);
+  }
   slot.pane = pane; slot.head = head; slot.body = body;
   return slot;
 }
@@ -1966,7 +1974,7 @@ function makeEditor(slot, value){
     ta.addEventListener("input", () => { updateBackdrop(slot); applyFootnotesEdit(slot); });
   } else {
     const sync = () => syncActiveFromEditor(slot);
-    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); });
+    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); refreshResults(); });
     // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
     ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); jumpFootnoteAtCursor(slot); });
     ta.addEventListener("keyup", () => { sync(); jumpFootnoteAtCursor(slot); });
@@ -2137,6 +2145,7 @@ function setFnFollow(slot){
   if(state.fnFollowKey === k) return;
   state.fnFollowKey = k;
   refreshFootnotes(true);
+  refreshResults();
 }
 // показать в окнах сносок определения из ведомого окна; force — даже если
 // содержимое то же (смена ведомого окна, перерисовка)
@@ -2152,6 +2161,20 @@ function refreshFootnotes(force){
     if(!force && document.activeElement === fn.editor) continue;  // не затирать под руками
     if(fn.editor.value !== text){ fn.editor.value = text; updateBackdrop(fn); }
     fn.editor.dir = dir; fn.backdrop.dir = dir;
+  }
+}
+// окно-результат: показать рендер ведомого окна письма (как окно сносок, но рендер)
+function refreshResults(){
+  const results = state.slots.filter(s => s.role === "result");
+  if(!results.length) return;
+  const src = fnFollowSlot();
+  const html = src && src.editor
+    ? renderPreviewHtml(src.editor.value)
+    : "<p class='pv-empty'>Поставьте курсор в окно письма</p>";
+  const ar = !!(src && src.role === "source");
+  for(const r of results){
+    if(r.resTitleEl) r.resTitleEl.textContent = "Результат · " + (src ? slotKeyName(slotKeyOf(src)) : "нет окна");
+    if(r.resPreview){ r.resPreview.innerHTML = html; r.resPreview.dir = ar ? "rtl" : "ltr"; r.resPreview.classList.toggle("pv-ar", ar); }
   }
 }
 // правка в окне сносок: тело ведомого окна остаётся, хвост определений заменяется
@@ -2227,6 +2250,16 @@ function normNL(t){ return t.replace(/\r\n?/g, "\n"); }
 
 // загрузить содержимое слота с диска (свежим)
 async function loadSlotFromDisk(slot, b){
+  if(slot.role === "result"){
+    // окно-результат: своего файла/поля нет — показывает рендер ведомого окна письма
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const pv = document.createElement("div");
+    pv.className = "pane-preview result-view"; pv.hidden = false;
+    slot.body.appendChild(pv);
+    slot.resPreview = pv;
+    return;
+  }
   if(slot.role === "footnotes"){
     // своего файла нет — содержимое придёт из ведомого окна (refreshFootnotes)
     slot.fileHandle = null; slot.savedText = "";
@@ -2279,7 +2312,13 @@ async function loadSlotFromDisk(slot, b){
 // восстановить содержимое слота из памяти (при переупорядочивании/добавлении) —
 // чтобы не потерять несохранённые правки
 function restoreSlot(slot, old){
-  if(slot.role === "footnotes"){
+  if(slot.role === "result"){
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const pv = document.createElement("div");
+    pv.className = "pane-preview result-view"; slot.body.appendChild(pv);
+    slot.resPreview = pv;           // содержимое перезальёт refreshResults
+  } else if(slot.role === "footnotes"){
     slot.fileHandle = null; slot.savedText = "";
     makeEditor(slot, "");           // содержимое перезальёт refreshFootnotes
   } else if(slot.role === "source"){
@@ -2357,6 +2396,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   for(const s of slots) if(s.reqBtn) reflectSlotRequest(s);
 
   refreshFootnotes(true);   // окна сносок — содержимым ведомого окна
+  refreshResults();         // окна-результаты — рендером ведомого окна
   recomputeFind(false);     // поиск — под содержимое нового раздела
 }
 
@@ -2378,6 +2418,7 @@ function slotKeyName(k){
   return k === "source" ? "оригинал"
     : k === "translation" ? "перевод"
     : k === "footnotes" ? "сноски"
+    : k === "result" ? "результат"
     : "вариант «" + k.slice("variant|".length) + "»";
 }
 // все несохранённые места: метка раздела → имена окон.
