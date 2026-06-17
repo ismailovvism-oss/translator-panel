@@ -429,6 +429,23 @@
   .backdrop .bd-head{ background:rgba(107,79,43,.10); box-shadow:inset 3px 0 0 0 var(--accent); border-radius:2px; }
   .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
   .editor::placeholder{ color:var(--ink-faint); }
+  /* режим «Результат»: read-only рендер разметки вместо поля */
+  .pane.preview-on .editor-wrap{ display:none; }
+  .pane-preview{ flex:1 1 auto; min-height:0; overflow:auto; padding:8px 14px; color:var(--ink); line-height:1.7; font-family:var(--ru); }
+  .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
+  .pane-preview p{ margin:.45em 0; }
+  .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
+  .pane-preview blockquote{ margin:.5em 0; padding:.15em .9em; border-inline-start:3px solid var(--line); color:var(--ink-soft); }
+  .pane-preview ul, .pane-preview ol{ margin:.4em 0; padding-inline-start:1.5em; }
+  .pane-preview li{ margin:.15em 0; }
+  .pane-preview .pv-callout{ margin:.6em 0; border:1px solid var(--line); border-inline-start:3px solid var(--accent); border-radius:6px; overflow:hidden; }
+  .pane-preview .pv-callout-t{ font-weight:600; padding:.3em .7em; background:var(--sel); }
+  .pane-preview .pv-callout > div:last-child{ padding:.25em .7em; }
+  .pane-preview .pv-note{ margin:.6em 0; padding:.2em .7em; border-inline-start:3px solid var(--note); background:rgba(63,127,147,.06); color:var(--ink-soft); }
+  .pane-preview .pv-fn{ color:var(--accent); font-size:.7em; vertical-align:super; }
+  .pane-preview mark.pv-q{ background:var(--mark); color:var(--ink); border-radius:2px; }
+  .pane-preview .pv-empty{ color:var(--ink-faint); }
+  #previewBtn.on{ background:var(--accent); color:#fff; border-color:var(--accent); }
   /* оригинал — арабский шрифт и RTL (поле и подложка одинаковые метрики) */
   .pane[data-role="source"] .editor, .pane[data-role="source"] .backdrop{
     font-family:var(--ar); font-size:1.3rem; line-height:1.95;
@@ -508,9 +525,14 @@
       <button data-md="page" title="Маркер страницы: &lt;!-- ص: N --&gt; отдельной строкой над абзацем. Только в оригинале; нумерация сквозная по тому. Номер подставляется следующим — поправьте, если нужно">стр.</button>
       <button data-md="question" title="Открытый вопрос: ==?вопрос== — подсвечивается жёлтым и блокирует verified">==?==</button>
       <button data-md="note" title="Заметка — непарный сектор: текст виден (бирюзовая полоса), но абзацы внутри не считаются за абзац при сверке. Работает в любом окне, включая оригинал. Оборачивает выделение в &lt;!-- note --&gt; … &lt;!-- /note --&gt;">Заметка</button>
+    </span>
+    <span class="md-sep"></span>
+    <span class="md-group">
+      <button data-md="link" id="linkBtn" hidden title="Связать абзац с парой в другом окне: текущему абзацу присвоится якорь sNNN, такой же ляжет в конец другого окна — туда впишите пару. Так нужный русский абзац соединяется с арабским по ID, а не по порядку">🔗 Связать</button>
       <button data-md="anchors" id="anchorBtn" hidden title="Проставить якоря &lt;!-- sNNN --&gt; абзацам этого окна без якоря (нумерация продолжается от максимума; существующие не трогаются). Якоря задают парность по ID между языками — нужно при авторстве книги в режиме библиотеки">⌗ Якоря</button>
     </span>
   </span>
+  <button id="previewBtn" class="btn" title="Показать результат (как будет выглядеть) вместо разметки. Нажмите снова — вернуться к правке" hidden>👁 Результат</button>
   <button id="headsToggle" class="btn" title="Скрыть служебные шапки окон — режим чтения">⊟ Шапки</button>
   <button id="addSlotBtn" class="btn" title="Добавить окно-слот">＋ Окно</button>
   <span class="counts" id="counts" hidden></span>
@@ -834,6 +856,7 @@ const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
   closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), anchorBtn: $("anchorBtn"), publishBtn: $("publishBtn"),
+  linkBtn: $("linkBtn"), previewBtn: $("previewBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
   addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
@@ -2312,6 +2335,9 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   const ts = slots.find(s => s.role === "translation") || null;
   state.transSlot = ts;
   els.anchorBtn.hidden = state.mode !== "library";   // якоря sNNN — только в книге
+  els.linkBtn.hidden = editableSlots().length < 2;   // связать пару — нужно 2+ окна
+  els.previewBtn.hidden = editableSlots().length < 1; // просмотр результата — есть что показать
+  if(state.preview) applyPreview();                  // держим режим «Результат» при смене блока
   // в library статус — у главы (в book.json), файл не обязателен; в папочном — по файлу
   const showStatus = state.mode === "library" ? !!ts : !!(ts && ts.fileHandle);
   els.statusBar.hidden = !showStatus;
@@ -3382,6 +3408,7 @@ function applyMdAction(kind){
     if(state.mode !== "library"){ toast("Якоря sNNN нужны только в режиме книги (читалка)", true); return; }
     assignAnchors(s); return;
   }
+  if(kind === "link"){ linkSector(s); return; }
   const [pre, post] = MD_WRAPS[kind];
   const ed = s.editor;
   const a = ed.selectionStart, b = ed.selectionEnd;
@@ -3511,6 +3538,108 @@ function assignAnchors(slot){
   ed.focus(); ed.setSelectionRange(0, ed.value.length);
   insertAtSelection(ed, text);
   toast(`Проставлены якоря: +${missing.length}`);
+}
+
+// связать абзац с парой в другом окне: текущему абзацу даём свободный якорь sNNN
+// (если его нет) и такой же кладём в конец других окон — туда впишешь пару
+function linkSector(slot){
+  if(!slot || !slot.editor) return;
+  const others = state.slots.filter(s => s !== slot && s.editor && s.role !== "footnotes");
+  if(!others.length){ toast("Откройте второе окно (＋ Окно) — связывать не с чем", true); return; }
+  const ed = slot.editor;
+  const sec = sectorsOf(parseBlocks(ed.value)).find(s => ed.selectionStart >= s.start && ed.selectionStart <= s.end);
+  if(!sec){ toast("Поставьте курсор в абзац, который нужно связать", true); return; }
+  let id = sec.id;
+  if(!id){
+    let max = 0;
+    for(const s of [slot, ...others])
+      for(const x of sectorsOf(parseBlocks(s.editor.value)))
+        if(x.id){ const n = parseInt(String(x.id).replace(/^s/i, ""), 10); if(Number.isFinite(n)) max = Math.max(max, n); }
+    id = "s" + (max + 1);
+    ed.focus(); ed.setSelectionRange(sec.start, sec.start);
+    insertAtSelection(ed, `<!-- ${id} -->\n`);
+  }
+  let added = 0;
+  for(const o of others){
+    if(sectorsOf(parseBlocks(o.editor.value)).some(s => s.id === id)) continue;   // уже есть
+    const v = o.editor.value;
+    const sep = v === "" ? "" : v.endsWith("\n\n") ? "" : v.endsWith("\n") ? "\n" : "\n\n";
+    o.editor.focus(); o.editor.setSelectionRange(v.length, v.length);
+    insertAtSelection(o.editor, `${sep}<!-- ${id} -->\n`);
+    added++;
+  }
+  const first = others[0]; first.editor.focus();
+  toast(added ? `Связано: ${id} — впишите пару в «${slotKeyName(slotKeyOf(first))}»` : `Якорь ${id} уже есть в обоих окнах`);
+}
+
+/* ===== режим «Результат»: read-only рендер разметки (как будет выглядеть) ===== */
+function pvEsc(s){ return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function pvInline(text){
+  let h = pvEsc(text);
+  h = h.replace(/&lt;u&gt;([\s\S]*?)&lt;\/u&gt;/g, "<u>$1</u>");
+  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  h = h.replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  h = h.replace(/==\?([\s\S]*?)==/g, '<mark class="pv-q">$1</mark>');
+  h = h.replace(/\[\^([^\]]+)\]/g, '<sup class="pv-fn">$1</sup>');
+  return h.replace(/\n/g, "<br>");
+}
+function pvBlocks(lines){
+  const isQ = l => /^>\s?/.test(l), isUl = l => /^[-*]\s+/.test(l), isOl = l => /^\d+\.\s+/.test(l);
+  const out = []; let i = 0;
+  while(i < lines.length){
+    if(isQ(lines[i])){
+      const run = []; while(i < lines.length && isQ(lines[i])){ run.push(lines[i].replace(/^>\s?/, "")); i++; }
+      const m = run[0] && run[0].match(/^\[!([\w-]+)\]\s*(.*)$/);
+      if(m){ const type = m[1].toLowerCase(), title = (m[2] || "").trim() || type;
+        out.push(`<div class="pv-callout pv-${type}"><div class="pv-callout-t">${pvInline(title)}</div><div>${pvBlocks(run.slice(1)).join("")}</div></div>`); }
+      else out.push("<blockquote>" + pvBlocks(run).join("") + "</blockquote>");
+      continue;
+    }
+    if(isUl(lines[i]) || isOl(lines[i])){
+      const ord = isOl(lines[i]), tag = ord ? "ol" : "ul", items = [];
+      while(i < lines.length && (ord ? isOl(lines[i]) : isUl(lines[i]))){ items.push(lines[i].replace(ord ? /^\d+\.\s+/ : /^[-*]\s+/, "")); i++; }
+      out.push(`<${tag}>` + items.map(it => "<li>" + pvInline(it) + "</li>").join("") + `</${tag}>`);
+      continue;
+    }
+    const run = []; while(i < lines.length && !isQ(lines[i]) && !isUl(lines[i]) && !isOl(lines[i])){ run.push(lines[i]); i++; }
+    out.push("<p>" + pvInline(run.join("\n")) + "</p>");
+  }
+  return out;
+}
+function renderPreviewHtml(text){
+  let html = "";
+  for(const b of parseBlocks(text)){
+    const seg = text.slice(b.start, b.end);
+    if(b.type === "heading") html += `<h3 class="pv-h">${pvInline(b.text)}</h3>`;
+    else if(b.type === "note") html += `<div class="pv-note">${pvBlocks(seg.split("\n").filter(l => !/^<!--\s*\/?\s*note\s*-->$/i.test(l.trim()))).join("")}</div>`;
+    else if(b.type === "sector") html += pvBlocks(seg.split("\n")).join("");
+    // comment/tag (якоря sNNN, страницы, теги) в результате прячем
+  }
+  return html || "<p class='pv-empty'>—</p>";
+}
+function setPreview(slot, on){
+  if(!slot.pane || !slot.body) return;
+  if(on){
+    let pv = slot.body.querySelector(".pane-preview");
+    if(!pv){ pv = document.createElement("div"); pv.className = "pane-preview"; slot.body.appendChild(pv); }
+    pv.dir = slot.editor ? slot.editor.dir : "ltr";
+    pv.innerHTML = slot.editor ? renderPreviewHtml(slot.editor.value) : "";
+    pv.hidden = false;
+    slot.pane.classList.add("preview-on");
+  } else {
+    const pv = slot.body.querySelector(".pane-preview");
+    if(pv) pv.hidden = true;
+    slot.pane.classList.remove("preview-on");
+  }
+}
+function applyPreview(){
+  for(const s of state.slots) if(s.role !== "footnotes") setPreview(s, !!state.preview);
+}
+function togglePreview(){
+  state.preview = !state.preview;
+  els.previewBtn.classList.toggle("on", state.preview);
+  els.previewBtn.textContent = state.preview ? "✎ Правка" : "👁 Результат";
+  applyPreview();
 }
 
 // список по выделенным строкам: маркированный «- » или нумерованный «1. », «2. »…
@@ -3667,6 +3796,7 @@ els.headsToggle.addEventListener("click", () => {
 els.openBtn.addEventListener("click", pickFolder);
 els.openBookBtn.addEventListener("click", pickBook);
 els.publishBtn.addEventListener("click", publishToLibrary);
+els.previewBtn.addEventListener("click", togglePreview);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.closeFolderBtn.addEventListener("click", closeFolder);
 els.ghOpenBtn.addEventListener("click", openGhModal);
