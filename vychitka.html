@@ -1987,6 +1987,12 @@ function markHTML(t, ranges){
 // Подложка собирается поблочно одним слоем: строка-заголовок получает фон+полосу
 // (.bd-head), активный сектор — подсветку (.sec-active), маркеры ==?…== — жёлтый.
 // Всё вложенными спанами, без отдельных накладываемых слоёв.
+// подсветка активного сектора нужна для ПАРНОЙ сверки (показать пару в соседнем
+// окне). В одном окне (черновик/письмо статьи) — это лишняя заливка; гасим её,
+// когда редактируемое окно одно.
+function sectorSyncOn(){
+  return state.slots.filter(s => s.editor && s.role !== "footnotes").length > 1;
+}
 function updateBackdrop(slot){
   if(!slot.backdrop || !slot.editor) return;
   const text = slot.editor.value;
@@ -2002,7 +2008,7 @@ function updateBackdrop(slot){
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
     else if(b.type === "note")
       inner = `<span class="bd-note">${inner}</span>`;             // непарная заметка
-    if(b.type === "sector" && secKey(b) === state.activeSector)
+    if(b.type === "sector" && secKey(b) === state.activeSector && sectorSyncOn())
       inner = `<span class="sec-active">${inner}</span>`;
     html += inner;
     cursor = b.end;
@@ -2257,6 +2263,12 @@ function restoreSlot(slot, old){
     if(old.fileHandle){
       slot.fileHandle = old.fileHandle; slot.fmLines = old.fmLines; slot.savedText = old.savedText;
       makeEditor(slot, old.curValue != null ? old.curValue : old.savedText);
+    } else if(state.current && (state.current.draft || state.mode === "library")){
+      // черновик/книга: пустое редактируемое поле, а не «Начать перевод»
+      slot.fileHandle = null;
+      slot.fmLines = state.mode === "library" ? null : ["title: ", "status: todo", "glossary_checked: false"];
+      slot.savedText = old.savedText || "";
+      makeEditor(slot, old.curValue != null ? old.curValue : (old.savedText || ""));
     } else {
       slot.fileHandle = null; slot.fmLines = null; slot.savedText = "";
       makeStart(slot);
