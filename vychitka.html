@@ -503,6 +503,7 @@
   <button id="openBtn" class="btn primary">Открыть папку</button>
   <button id="ghOpenBtn" class="btn" title="Открыть репозиторий перевода на GitHub — работает по ссылке и на телефоне">Открыть с GitHub</button>
   <button id="openBookBtn" class="btn" title="Открыть книгу читалки (папка с book.json: языковые папки + book.json) и править её на месте">Открыть книгу</button>
+  <button id="openFileBtn" class="btn" title="Открыть один .md-файл и править его напрямую (без папочной структуры). Сохранение пишет в тот же файл">Открыть файл</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
   <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть папку — вернуться к пустым редактируемым окнам (черновику)" hidden>Закрыть папку</button>
@@ -861,7 +862,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   layout: document.querySelector(".layout"), resizer: $("resizer"), sideToggle: $("sideToggle"),
   openBtn: $("openBtn"), reopenBtn: $("reopenBtn"), rootName: $("rootName"),
-  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), anchorBtn: $("anchorBtn"), publishBtn: $("publishBtn"),
+  closeFolderBtn: $("closeFolderBtn"), openBookBtn: $("openBookBtn"), openFileBtn: $("openFileBtn"), anchorBtn: $("anchorBtn"), publishBtn: $("publishBtn"),
   linkBtn: $("linkBtn"), previewBtn: $("previewBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
@@ -1214,6 +1215,13 @@ async function reopenFolder(){
     await useBook(bh);
     return;
   }
+  if(localStorage.getItem(LAST_MODE_KEY) === "file"){
+    const fh = await IDB.get("file");
+    if(!fh){ toast("Нет сохранённого файла", true); return; }
+    if(!(await ensurePermission(fh, "readwrite"))){ toast("Нет доступа к файлу — выберите заново", true); return; }
+    await useFile(fh);
+    return;
+  }
   const handle = await IDB.get("root");
   if(!handle){ toast("Нет сохранённой папки", true); return; }
   if(!(await ensurePermission(handle, "readwrite"))){
@@ -1287,6 +1295,54 @@ async function saveBookJson(){
   const w = await fh.createWritable();
   await w.write(JSON.stringify(state.book.data, null, 2) + "\n");
   await w.close();
+}
+
+/* ===== режим одного файла: открыть и править конкретный .md, без папок ===== */
+async function pickFile(){
+  try{
+    const [handle] = await window.showOpenFilePicker({
+      multiple: false,
+      types: [{ description: "Текст/Markdown", accept: { "text/markdown": [".md", ".markdown"], "text/plain": [".txt"] } }],
+    });
+    if(!handle) return;
+    await IDB.set("file", handle);
+    await useFile(handle);
+  }catch(e){
+    if(e && e.name === "AbortError") return;
+    console.error(e); toast("Не удалось открыть файл: " + e.message, true);
+  }
+}
+async function useFile(handle){
+  state.rootHandle = null; state.mode = "file"; state.book = null; state.blocks = [];
+  state.drafts.clear();
+  // мини-адаптер: читать/писать прямо в этот FileSystemFileHandle (без папок)
+  state.fs = {
+    kind: "file", title: "Файл: <code>" + esc(handle.name) + "</code>",
+    async ensureWrite(){ return ensurePermission(handle, "readwrite"); },
+    async read(h){ return (await h.getFile()).text(); },
+    async write(h, content){ const w = await h.createWritable(); await w.write(content); await w.close(); },
+    async list(){ return []; },
+    async getFile(){ throw new Error("в режиме одного файла подпапок нет"); },
+    async remove(){},
+  };
+  const name = labelOf(handle.name) || handle.name;
+  state.current = { label: name, title: "", status: null, srcHandle: null, trHandle: handle, single: true };
+  try{ localStorage.setItem(LAST_MODE_KEY, "file"); }catch{}
+  els.list.innerHTML = "";
+  els.emptyState.hidden = true;
+  els.head.hidden = false;
+  els.bhTitle.value = name; els.bhTitle.disabled = true; els.bhTitle.placeholder = name;
+  els.bhLabel.textContent = handle.name;
+  els.panes.hidden = false;
+  els.mdTools.hidden = false;
+  els.rootName.innerHTML = state.fs.title;
+  els.reopenBtn.hidden = true;
+  els.closeFolderBtn.hidden = false;
+  els.newBlockBtn.hidden = true;
+  els.publishBtn.hidden = true;
+  await renderSlots({ reload: true });
+  const ed = state.transSlot && state.transSlot.editor;
+  if(ed){ ed.focus(); ed.setSelectionRange(0, 0); ed.scrollTop = 0; }
 }
 
 /* ===== Опубликовать в библиотеку: папочный репозиторий → книга читалки =====
@@ -1534,6 +1590,15 @@ async function refreshReopenButton(){
       if(bh){
         els.reopenBtn.hidden = false;
         els.reopenBtn.textContent = "Открыть книгу «" + bh.name + "»";
+        return;
+      }
+    }catch{}
+  } else if(mode === "file" && window.showOpenFilePicker){
+    try{
+      const fh = await IDB.get("file");
+      if(fh){
+        els.reopenBtn.hidden = false;
+        els.reopenBtn.textContent = "Открыть файл «" + fh.name + "»";
         return;
       }
     }catch{}
@@ -2272,8 +2337,8 @@ async function loadSlotFromDisk(slot, b){
     slot.fileHandle = b.srcHandle || null; slot.savedText = text;
     makeEditor(slot, text); applyDraftIfAny(slot, b);
   } else if(slot.role === "translation"){
-    if(state.mode === "library"){
-      // формат читалки: язык-файл сырой, без фронтматтера (title/status — в book.json)
+    if(state.mode === "library" || state.mode === "file"){
+      // сырой текст без фронтматтера (формат читалки или одиночный файл)
       let body = "";
       if(b.trHandle){ try{ body = normNL(await readFile(b.trHandle)).replace(/^\n+/, "").replace(/\s+$/, ""); }catch{} }
       slot.fileHandle = b.trHandle || null; slot.fmLines = null; slot.savedText = body;
@@ -2501,9 +2566,9 @@ async function saveTranslation(slot){
   if(state.current && state.current.draft) return commitDraft();
   const ts = slot || state.transSlot;
   if(!ts){ return; }
-  // library: пишем сырой текст в <transLang>/<file>, без фронтматтера; файла может
-  // ещё не быть (новый перевод главы) — создаём
-  if(state.mode === "library"){
+  // library/file: пишем сырой текст без фронтматтера; в library файла может ещё
+  // не быть (новый перевод главы) — создаём; в file-режиме trHandle = сам файл
+  if(state.mode === "library" || state.mode === "file"){
     if(!ts.editor){ return; }
     if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
     const b = state.current;
@@ -3847,6 +3912,7 @@ els.headsToggle.addEventListener("click", () => {
 
 els.openBtn.addEventListener("click", pickFolder);
 els.openBookBtn.addEventListener("click", pickBook);
+els.openFileBtn.addEventListener("click", pickFile);
 els.publishBtn.addEventListener("click", publishToLibrary);
 els.previewBtn.addEventListener("click", cyclePreview);
 els.reopenBtn.addEventListener("click", reopenFolder);
@@ -4108,6 +4174,7 @@ window.addEventListener("beforeunload", (e) => {
   // без File System Access (мобильные и прочие браузеры) локальная папка
   // недоступна, но репозиторий GitHub работает — приложение не отключаем
   if(!window.showDirectoryPicker){ els.openBtn.hidden = true; els.openBookBtn.hidden = true; }
+  if(!window.showOpenFilePicker){ els.openFileBtn.hidden = true; }
   state.layout = loadLayout();
   applySidePrefs();
   applyHeadsHidden();
