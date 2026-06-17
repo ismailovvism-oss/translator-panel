@@ -437,6 +437,18 @@
   .pane-preview{ min-height:0; overflow:auto; padding:8px 14px; color:var(--ink); line-height:1.7; font-family:var(--ru); background:var(--panel); }
   .pane-preview.result-view{ flex:1 1 auto; }       /* окно-результат: рендер во всю высоту */
   .pane-preview.pv-ar{ font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
+  /* окно-структура: узкая панель плана по заголовкам */
+  .pane[data-role="structure"]{ flex:0 0 240px; }
+  .pane-outline{ flex:1 1 auto; min-height:0; overflow:auto; padding:6px 4px; font-size:13px; }
+  .ol-row{ display:flex; align-items:center; gap:1px; }
+  .ol-jump{ flex:1 1 auto; min-width:0; text-align:left; background:none; border:none; color:var(--ink); cursor:pointer; padding:3px 6px; border-radius:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:inherit; }
+  .ol-jump:hover{ background:var(--sel); }
+  .ol-mv{ flex:0 0 auto; background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:11px; padding:2px 3px; border-radius:4px; }
+  .ol-mv:hover{ color:var(--accent); background:var(--sel); }
+  .ol-l1 .ol-jump{ font-weight:600; }
+  .ol-l3 .ol-jump{ padding-left:18px; color:var(--ink-soft); }
+  .ol-l4 .ol-jump{ padding-left:30px; color:var(--ink-soft); }
+  .pane-outline .pv-empty{ color:var(--ink-faint); padding:6px; }
   .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane-preview p{ margin:.45em 0; }
   .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
@@ -551,6 +563,7 @@
         <option value="variant">Вариант</option>
         <option value="footnotes">Сноски</option>
         <option value="result">Результат (рендер)</option>
+        <option value="structure">Структура (план)</option>
       </select>
     </label>
     <label id="popLabelWrap" hidden>Ярлык источника
@@ -1166,6 +1179,7 @@ function normalizeSpec(s){
   }
   if(s.role === "footnotes") return { role: "footnotes", collapsed };
   if(s.role === "result") return { role: "result", collapsed };
+  if(s.role === "structure") return { role: "structure", collapsed };
   return null;
 }
 function loadLayout(){
@@ -1910,6 +1924,7 @@ function buildSlotDOM(spec, i){
     spec.role === "translation" ? "Перевод" :
     spec.role === "footnotes" ? "Сноски" :
     spec.role === "result" ? "Результат" :
+    spec.role === "structure" ? "Структура" :
     "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
@@ -1918,9 +1933,11 @@ function buildSlotDOM(spec, i){
     spec.role === "translation" ? "Перевод · RU" :
     spec.role === "footnotes" ? "Сноски" :
     spec.role === "result" ? "Результат" :
+    spec.role === "structure" ? "Структура" :
     "Вариант · " + spec.label;
   if(spec.role === "footnotes") slot.fnTitleEl = label;   // подпись «Сноски · окно»
   if(spec.role === "result") slot.resTitleEl = label;     // подпись «Результат · окно»
+  if(spec.role === "structure") slot.olTitleEl = label;   // подпись «Структура · окно»
   head.appendChild(label);
 
   // у оригинала, перевода и варианта — выбор команды, модели и кнопка запроса.
@@ -1963,7 +1980,7 @@ function buildSlotDOM(spec, i){
 
   // у каждого окна (кроме «результата» — он только показывает) одинаковая кнопка
   // сохранения и индикатор несохранённого; окно пишет только в свой файл
-  if(spec.role !== "result"){
+  if(spec.role !== "result" && spec.role !== "structure"){
     const save = document.createElement("button");
     save.className = "mini-btn";
     save.dataset.action =
@@ -2044,7 +2061,7 @@ function makeEditor(slot, value){
     ta.addEventListener("input", () => { updateBackdrop(slot); applyFootnotesEdit(slot); });
   } else {
     const sync = () => syncActiveFromEditor(slot);
-    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); refreshResults(); });
+    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); refreshResults(); refreshOutline(); });
     // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
     ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); jumpFootnoteAtCursor(slot); });
     ta.addEventListener("keyup", () => { sync(); jumpFootnoteAtCursor(slot); });
@@ -2216,6 +2233,7 @@ function setFnFollow(slot){
   state.fnFollowKey = k;
   refreshFootnotes(true);
   refreshResults();
+  refreshOutline();
 }
 // показать в окнах сносок определения из ведомого окна; force — даже если
 // содержимое то же (смена ведомого окна, перерисовка)
@@ -2246,6 +2264,59 @@ function refreshResults(){
     if(r.resTitleEl) r.resTitleEl.textContent = "Результат · " + (src ? slotKeyName(slotKeyOf(src)) : "нет окна");
     if(r.resPreview){ r.resPreview.innerHTML = html; r.resPreview.dir = ar ? "rtl" : "ltr"; r.resPreview.classList.toggle("pv-ar", ar); }
   }
+}
+// окно-структура: план по заголовкам (##) ведомого окна письма; клик — прыжок,
+// ▲▼ — переставить раздел (раздел = от заголовка до следующего заголовка)
+function refreshOutline(){
+  const outs = state.slots.filter(s => s.role === "structure");
+  if(!outs.length) return;
+  const src = fnFollowSlot();
+  let html;
+  if(src && src.editor){
+    const heads = parseBlocks(src.editor.value).filter(b => b.type === "heading");
+    if(heads.length){
+      html = heads.map(h =>
+        `<div class="ol-row ol-l${Math.min(h.level, 4)}">` +
+        `<button class="ol-jump" data-pos="${h.start}" title="Перейти к разделу">${esc(h.text || "(без названия)")}</button>` +
+        `<button class="ol-mv ol-up" data-pos="${h.start}" title="Выше">▲</button>` +
+        `<button class="ol-mv ol-down" data-pos="${h.start}" title="Ниже">▼</button>` +
+        `</div>`).join("");
+    } else html = "<p class='pv-empty'>Нет заголовков. Ставь «## …» — появится план.</p>";
+  } else html = "<p class='pv-empty'>Поставьте курсор в окно письма.</p>";
+  for(const o of outs){
+    if(o.olTitleEl) o.olTitleEl.textContent = "Структура · " + (src ? slotKeyName(slotKeyOf(src)) : "нет окна");
+    if(o.olEl) o.olEl.innerHTML = html;
+  }
+}
+function jumpEditorTo(slot, pos){
+  if(!slot || !slot.editor) return;
+  const ed = slot.editor;
+  ed.focus(); ed.setSelectionRange(pos, pos);
+  const top = caretTopInBackdrop(slot.backdrop, pos);
+  if(top != null){ ed.scrollTop = Math.max(0, top - 40); slot.backdrop.scrollTop = ed.scrollTop; }
+}
+// разделы = от заголовка до следующего заголовка (или конца). Текст до первого
+// заголовка — преамбула, не двигается.
+function headingSections(text){
+  const heads = parseBlocks(text).filter(b => b.type === "heading");
+  return heads.map((h, i) => ({ start: h.start, end: i + 1 < heads.length ? heads[i + 1].start : text.length }));
+}
+function moveSection(slot, headStart, dir){
+  if(!slot || !slot.editor) return;
+  const ed = slot.editor, text = ed.value;
+  const secs = headingSections(text);
+  const i = secs.findIndex(s => s.start === headStart);
+  if(i < 0) return;
+  const j = i + dir;
+  if(j < 0 || j >= secs.length){ toast(dir < 0 ? "Это первый раздел" : "Это последний раздел"); return; }
+  const a = secs[Math.min(i, j)], b = secs[Math.max(i, j)];   // a раньше b, смежные
+  const before = text.slice(0, a.start), after = text.slice(b.end);
+  const segA = text.slice(a.start, a.end), segB = text.slice(b.start, b.end);
+  ed.focus(); ed.setSelectionRange(0, text.length);
+  insertAtSelection(ed, before + segB + segA + after);
+  const movedPos = dir < 0 ? before.length : before.length + segB.length;
+  ed.setSelectionRange(movedPos, movedPos);
+  refreshOutline();
 }
 // правка в окне сносок: тело ведомого окна остаётся, хвост определений заменяется
 function applyFootnotesEdit(fn){
@@ -2330,6 +2401,16 @@ async function loadSlotFromDisk(slot, b){
     slot.resPreview = pv;
     return;
   }
+  if(slot.role === "structure"){
+    // окно-структура: план по заголовкам ведомого окна письма (refreshOutline)
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ol = document.createElement("div");
+    ol.className = "pane-outline";
+    slot.body.appendChild(ol);
+    slot.olEl = ol;
+    return;
+  }
   if(slot.role === "footnotes"){
     // своего файла нет — содержимое придёт из ведомого окна (refreshFootnotes)
     slot.fileHandle = null; slot.savedText = "";
@@ -2388,6 +2469,12 @@ function restoreSlot(slot, old){
     const pv = document.createElement("div");
     pv.className = "pane-preview result-view"; slot.body.appendChild(pv);
     slot.resPreview = pv;           // содержимое перезальёт refreshResults
+  } else if(slot.role === "structure"){
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ol = document.createElement("div");
+    ol.className = "pane-outline"; slot.body.appendChild(ol);
+    slot.olEl = ol;                 // содержимое перезальёт refreshOutline
   } else if(slot.role === "footnotes"){
     slot.fileHandle = null; slot.savedText = "";
     makeEditor(slot, "");           // содержимое перезальёт refreshFootnotes
@@ -2474,6 +2561,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
 
   refreshFootnotes(true);   // окна сносок — содержимым ведомого окна
   refreshResults();         // окна-результаты — рендером ведомого окна
+  refreshOutline();         // окна-структуры — планом по заголовкам
   recomputeFind(false);     // поиск — под содержимое нового раздела
 }
 
@@ -4037,6 +4125,11 @@ els.reqModal.addEventListener("click", (e) => { if(e.target === els.reqModal) cl
 
 // действия внутри слотов (сохранить вариант / начать перевод / инструменты раскладки)
 els.panes.addEventListener("click", (e) => {
+  // окно-структура: прыжок к разделу / перестановка раздела в ведомом окне письма
+  const olj = e.target.closest(".ol-jump");
+  if(olj){ const s = fnFollowSlot(); if(s) jumpEditorTo(s, parseInt(olj.dataset.pos, 10)); return; }
+  const olm = e.target.closest(".ol-mv");
+  if(olm){ const s = fnFollowSlot(); if(s) moveSection(s, parseInt(olm.dataset.pos, 10), olm.classList.contains("ol-up") ? -1 : 1); return; }
   const tool = e.target.closest("[data-tool]");
   if(tool){
     const pane = tool.closest(".pane");
