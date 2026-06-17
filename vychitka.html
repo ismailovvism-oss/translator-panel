@@ -506,7 +506,7 @@
   <button id="openFileBtn" class="btn" title="Открыть один .md-файл и править его напрямую (без папочной структуры). Сохранение пишет в тот же файл">Открыть файл</button>
   <button id="reopenBtn" class="btn" hidden></button>
   <span class="root-name" id="rootName"></span>
-  <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть папку — вернуться к пустым редактируемым окнам (черновику)" hidden>Закрыть папку</button>
+  <button id="closeFolderBtn" class="btn" title="Сохранить всё и закрыть текущую папку / книгу / файл — вернуться к пустым редактируемым окнам (черновику)" hidden>✕ Закрыть</button>
   <span class="spacer"></span>
   <button id="settingsBtn" class="btn" title="Настройки API (ключ, шаблон, модели)">⚙ Настройки</button>
   <button id="newBlockBtn" class="btn" title="Создать новый раздел из вставленного текста" hidden>Новый раздел</button>
@@ -3731,7 +3731,7 @@ function renderPreviewHtml(text){
 const PREVIEW_MODES = ["md", "split", "result"];
 const PREVIEW_LABEL = { md: "👁 Результат", split: "⊟ Сплит", result: "📄 Рендер" };
 function setPreview(slot, mode){
-  if(!slot.pane || !slot.body) return;
+  if(!slot.pane || !slot.body || slot.role === "result") return;   // окно-результат само рендер — не трогаем
   slot.pane.classList.remove("view-split", "view-result");
   let pv = slot.body.querySelector(".pane-preview");
   if(mode === "md"){ if(pv) pv.hidden = true; return; }
@@ -3743,13 +3743,13 @@ function setPreview(slot, mode){
 }
 function refreshPreview(slot){   // живое обновление рендера при наборе
   if(!state.previewMode || state.previewMode === "md") return;
-  if(!slot || slot.role === "footnotes") return;
-  const pv = slot.body && slot.body.querySelector(".pane-preview");
+  if(!slot || slot.role === "footnotes" || slot.role === "result") return;
+  const pv = slot.body && slot.body.querySelector(".pane-preview:not(.result-view)");
   if(pv && slot.editor){ pv.innerHTML = renderPreviewHtml(slot.editor.value); }
 }
 function applyPreview(){
   const mode = state.previewMode || "md";
-  for(const s of state.slots) if(s.role !== "footnotes") setPreview(s, mode);
+  for(const s of state.slots) if(s.role !== "footnotes" && s.role !== "result") setPreview(s, mode);
 }
 function cyclePreview(){
   const i = PREVIEW_MODES.indexOf(state.previewMode || "md");
