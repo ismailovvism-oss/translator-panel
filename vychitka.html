@@ -429,9 +429,12 @@
   .backdrop .bd-head{ background:rgba(107,79,43,.10); box-shadow:inset 3px 0 0 0 var(--accent); border-radius:2px; }
   .editor{ resize:none; background:transparent; color:var(--ink); overflow:auto; outline:none; }
   .editor::placeholder{ color:var(--ink-faint); }
-  /* режим «Результат»: read-only рендер разметки вместо поля */
-  .pane.preview-on .editor-wrap{ display:none; }
-  .pane-preview{ flex:1 1 auto; min-height:0; overflow:auto; padding:8px 14px; color:var(--ink); line-height:1.7; font-family:var(--ru); }
+  /* показ результата: «Сплит» — правка сверху + живой рендер снизу; «Рендер» — только рендер */
+  .pane.view-split .editor-wrap{ flex:1 1 50%; min-height:0; border-bottom:2px solid var(--line); }
+  .pane.view-split .pane-preview{ flex:1 1 50%; }
+  .pane.view-result .editor-wrap{ display:none; }
+  .pane.view-result .pane-preview{ flex:1 1 auto; }
+  .pane-preview{ min-height:0; overflow:auto; padding:8px 14px; color:var(--ink); line-height:1.7; font-family:var(--ru); background:var(--panel); }
   .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane-preview p{ margin:.45em 0; }
   .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
@@ -1963,7 +1966,7 @@ function makeEditor(slot, value){
     ta.addEventListener("input", () => { updateBackdrop(slot); applyFootnotesEdit(slot); });
   } else {
     const sync = () => syncActiveFromEditor(slot);
-    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); });
+    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); });
     // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
     ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); jumpFootnoteAtCursor(slot); });
     ta.addEventListener("keyup", () => { sync(); jumpFootnoteAtCursor(slot); });
@@ -2337,7 +2340,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   els.anchorBtn.hidden = state.mode !== "library";   // якоря sNNN — только в книге
   els.linkBtn.hidden = editableSlots().length < 2;   // связать пару — нужно 2+ окна
   els.previewBtn.hidden = editableSlots().length < 1; // просмотр результата — есть что показать
-  if(state.preview) applyPreview();                  // держим режим «Результат» при смене блока
+  if(state.previewMode && state.previewMode !== "md") applyPreview();   // держим режим показа при смене блока
   // в library статус — у главы (в book.json), файл не обязателен; в папочном — по файлу
   const showStatus = state.mode === "library" ? !!ts : !!(ts && ts.fileHandle);
   els.statusBar.hidden = !showStatus;
@@ -3617,28 +3620,36 @@ function renderPreviewHtml(text){
   }
   return html || "<p class='pv-empty'>—</p>";
 }
-function setPreview(slot, on){
+// режим показа результата: "md" (только разметка) | "split" (правка + рендер) |
+// "result" (только рендер, во весь слот). Применяется ко всем редактируемым окнам.
+const PREVIEW_MODES = ["md", "split", "result"];
+const PREVIEW_LABEL = { md: "👁 Результат", split: "⊟ Сплит", result: "📄 Рендер" };
+function setPreview(slot, mode){
   if(!slot.pane || !slot.body) return;
-  if(on){
-    let pv = slot.body.querySelector(".pane-preview");
-    if(!pv){ pv = document.createElement("div"); pv.className = "pane-preview"; slot.body.appendChild(pv); }
-    pv.dir = slot.editor ? slot.editor.dir : "ltr";
-    pv.innerHTML = slot.editor ? renderPreviewHtml(slot.editor.value) : "";
-    pv.hidden = false;
-    slot.pane.classList.add("preview-on");
-  } else {
-    const pv = slot.body.querySelector(".pane-preview");
-    if(pv) pv.hidden = true;
-    slot.pane.classList.remove("preview-on");
-  }
+  slot.pane.classList.remove("view-split", "view-result");
+  let pv = slot.body.querySelector(".pane-preview");
+  if(mode === "md"){ if(pv) pv.hidden = true; return; }
+  if(!pv){ pv = document.createElement("div"); pv.className = "pane-preview"; slot.body.appendChild(pv); }
+  pv.dir = slot.editor ? slot.editor.dir : "ltr";
+  pv.innerHTML = slot.editor ? renderPreviewHtml(slot.editor.value) : "";
+  pv.hidden = false;
+  slot.pane.classList.add(mode === "split" ? "view-split" : "view-result");
+}
+function refreshPreview(slot){   // живое обновление рендера при наборе
+  if(!state.previewMode || state.previewMode === "md") return;
+  if(!slot || slot.role === "footnotes") return;
+  const pv = slot.body && slot.body.querySelector(".pane-preview");
+  if(pv && slot.editor){ pv.innerHTML = renderPreviewHtml(slot.editor.value); }
 }
 function applyPreview(){
-  for(const s of state.slots) if(s.role !== "footnotes") setPreview(s, !!state.preview);
+  const mode = state.previewMode || "md";
+  for(const s of state.slots) if(s.role !== "footnotes") setPreview(s, mode);
 }
-function togglePreview(){
-  state.preview = !state.preview;
-  els.previewBtn.classList.toggle("on", state.preview);
-  els.previewBtn.textContent = state.preview ? "✎ Правка" : "👁 Результат";
+function cyclePreview(){
+  const i = PREVIEW_MODES.indexOf(state.previewMode || "md");
+  state.previewMode = PREVIEW_MODES[(i + 1) % PREVIEW_MODES.length];
+  els.previewBtn.textContent = PREVIEW_LABEL[state.previewMode];
+  els.previewBtn.classList.toggle("on", state.previewMode !== "md");
   applyPreview();
 }
 
@@ -3796,7 +3807,7 @@ els.headsToggle.addEventListener("click", () => {
 els.openBtn.addEventListener("click", pickFolder);
 els.openBookBtn.addEventListener("click", pickBook);
 els.publishBtn.addEventListener("click", publishToLibrary);
-els.previewBtn.addEventListener("click", togglePreview);
+els.previewBtn.addEventListener("click", cyclePreview);
 els.reopenBtn.addEventListener("click", reopenFolder);
 els.closeFolderBtn.addEventListener("click", closeFolder);
 els.ghOpenBtn.addEventListener("click", openGhModal);
