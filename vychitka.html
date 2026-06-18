@@ -397,6 +397,9 @@
   }
   .pane-tools button:hover, .mini-btn:hover{ border-color:var(--accent); color:var(--ink); }
   .mini-btn{ padding:3px 9px; }
+  .sync-toggle{ padding:3px 6px; }                       /* тумблер синхронной прокрутки */
+  .sync-toggle.off{ color:var(--ink-faint); background:var(--bg); text-decoration:line-through; }
+  .sync-toggle.off:hover{ color:var(--ink-soft); }
 
   .pane-body{ flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
 
@@ -1168,12 +1171,12 @@ function normalizeSpec(s){
   if(!s || typeof s !== "object") return null;
   const collapsed = !!s.collapsed;
   if(s.role === "source") return {
-    role: "source", collapsed,
+    role: "source", collapsed, nosync: !!s.nosync,
     model: typeof s.model === "string" ? s.model : "",
     command: typeof s.command === "string" ? s.command : "",
   };
   if(s.role === "translation") return {
-    role: "translation", collapsed,
+    role: "translation", collapsed, nosync: !!s.nosync,
     model: typeof s.model === "string" ? s.model : "",
     command: typeof s.command === "string" ? s.command : "",
   };
@@ -1181,7 +1184,7 @@ function normalizeSpec(s){
     const label = sanitizeLabel(s.label || "");
     if(!label) return null;
     return {
-      role: "variant", label,
+      role: "variant", label, nosync: !!s.nosync,
       model: typeof s.model === "string" ? s.model : "",
       command: typeof s.command === "string" ? s.command : "",
       collapsed,
@@ -1918,7 +1921,7 @@ function sectorAtCaret(blocks, caret){
 function buildSlotDOM(spec, i){
   const slot = {
     role: spec.role, label: spec.label || "", model: spec.model || "",
-    command: spec.command || "", index: i,
+    command: spec.command || "", index: i, nosync: !!spec.nosync,
     editor: null, backdrop: null,
     fileHandle: null, fmLines: null, savedText: "", dot: null,
   };
@@ -1988,8 +1991,20 @@ function buildSlotDOM(spec, i){
     head.appendChild(take);
   }
 
-  // у каждого окна (кроме «результата» — он только показывает) одинаковая кнопка
-  // сохранения и индикатор несохранённого; окно пишет только в свой файл
+  // тумблер синхронной прокрутки этого окна (источник/перевод/вариант): выкл —
+  // окно не прокручивается к парному сектору и не дёргает другие (для вычитки статей)
+  if(spec.role === "source" || spec.role === "translation" || spec.role === "variant"){
+    const sync = document.createElement("button");
+    sync.className = "mini-btn sync-toggle" + (slot.nosync ? " off" : "");
+    sync.dataset.action = "toggle-sync";
+    sync.textContent = "⇅";
+    sync.title = "Синхронная прокрутка к парному сектору — вкл/выкл для этого окна";
+    slot.syncBtn = sync;
+    head.appendChild(sync);
+  }
+
+  // у каждого окна (кроме «результата»/«структуры» — они только показывают)
+  // одинаковая кнопка сохранения и индикатор несохранённого; окно пишет в свой файл
   if(spec.role !== "result" && spec.role !== "structure"){
     const save = document.createElement("button");
     save.className = "mini-btn";
@@ -2139,7 +2154,7 @@ function updateBackdrop(slot){
       inner = `<span class="bd-head h${Math.min(b.level, 3)}">${inner}</span>`;
     else if(b.type === "note")
       inner = `<span class="bd-note">${inner}</span>`;             // непарная заметка
-    if(b.type === "sector" && secKey(b) === state.activeSector && sectorSyncOn())
+    if(b.type === "sector" && secKey(b) === state.activeSector && sectorSyncOn() && !slot.nosync)
       inner = `<span class="sec-active">${inner}</span>`;
     html += inner;
     cursor = b.end;
@@ -2158,7 +2173,7 @@ function setActiveSector(idx){
   for(const s of state.slots) if(s.editor) updateBackdrop(s);
 }
 function syncActiveFromEditor(slot){
-  if(!slot.editor) return;
+  if(!slot.editor || slot.nosync) return;   // окно с выключенной синхронизацией не двигает активный сектор
   const idx = sectorAtCaret(parseBlocks(slot.editor.value), slot.editor.selectionStart);
   if(idx != null) setActiveSector(idx);
 }
@@ -2215,12 +2230,13 @@ function scrollSlotToSector(slot, ord){
 // по клику в сектор: оригинал → только перевод; перевод → все прочие (оригинал+варианты);
 // вариант → ничего. Соответствие — по порядковому номеру сектора.
 function scrollTargetsFrom(src){
-  if(!src || !src.editor || src.role === "variant") return;
+  if(!src || !src.editor || src.role === "variant" || src.nosync) return;
   const ord = state.activeSector;
   if(ord == null) return;
-  const targets = src.role === "source"
+  const targets = (src.role === "source"
     ? state.slots.filter(s => s.role === "translation" && s.editor)
-    : state.slots.filter(s => s !== src && s.role !== "translation" && s.role !== "footnotes" && s.editor);
+    : state.slots.filter(s => s !== src && s.role !== "translation" && s.role !== "footnotes" && s.editor))
+    .filter(s => !s.nosync);   // окна с выключенной синхронизацией не прокручиваем
   for(const t of targets) scrollSlotToSector(t, ord);
 }
 
@@ -4178,6 +4194,20 @@ els.panes.addEventListener("click", (e) => {
   const sv = e.target.closest("[data-action='save-variant']");
   if(sv){
     saveVariant(state.slots[parseInt(sv.closest(".pane").dataset.index, 10)]);
+    return;
+  }
+  const tg = e.target.closest("[data-action='toggle-sync']");
+  if(tg){
+    const idx = parseInt(tg.closest(".pane").dataset.index, 10);
+    const slot = state.slots[idx], spec = state.layout[idx];
+    if(slot){
+      slot.nosync = !slot.nosync;
+      if(spec) spec.nosync = slot.nosync;
+      saveLayout();
+      tg.classList.toggle("off", slot.nosync);
+      updateBackdrop(slot);
+      toast(slot.nosync ? "Синхронная прокрутка выключена для этого окна" : "Синхронная прокрутка включена");
+    }
     return;
   }
   const ss = e.target.closest("[data-action='save-source']");
