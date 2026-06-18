@@ -461,6 +461,18 @@
   /* окно-тезисы: каркас/план статьи (хранится отдельно по документу) */
   .theses-edit{ flex:1 1 auto; min-height:0; width:100%; border:none; resize:none; padding:8px 12px; font-family:var(--ui); font-size:13px; line-height:1.6; background:transparent; color:var(--ink); outline:none; }
   .theses-edit::placeholder{ color:var(--ink-faint); }
+  /* окно-корбоард: карточки разделов, перетаскивание мышью */
+  .pane-cork{ flex:1 1 auto; min-height:0; overflow:auto; padding:10px; display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; }
+  .cork-card{ flex:0 0 auto; width:160px; min-height:90px; max-height:160px; overflow:hidden; box-sizing:border-box; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:0 1px 2px rgba(0,0,0,.06); cursor:grab; transition:box-shadow .12s, transform .12s; }
+  .cork-card:hover{ box-shadow:0 2px 8px rgba(0,0,0,.12); }
+  .cork-card.cork-drag{ opacity:.45; cursor:grabbing; }
+  .cork-card.cork-over{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent) inset; }
+  .cork-title{ font-weight:600; font-size:13px; line-height:1.3; margin-bottom:5px; color:var(--ink); word-break:break-word; }
+  .cork-l1 .cork-title{ font-size:14px; }
+  .cork-l3{ width:148px; } .cork-l3 .cork-title{ color:var(--ink-soft); }
+  .cork-l4{ width:136px; } .cork-l4 .cork-title{ color:var(--ink-soft); }
+  .cork-body{ font-size:11.5px; line-height:1.45; color:var(--ink-soft); word-break:break-word; }
+  .pane-cork .pv-empty{ color:var(--ink-faint); padding:6px; }
   .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane-preview p{ margin:.45em 0; }
   .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
@@ -580,6 +592,7 @@
         <option value="result">Результат (рендер)</option>
         <option value="structure">Структура (план)</option>
         <option value="theses">Тезисы (каркас)</option>
+        <option value="corkboard">Корбоард (карточки)</option>
       </select>
     </label>
     <label id="popLabelWrap" hidden>Ярлык источника
@@ -1198,6 +1211,7 @@ function normalizeSpec(s){
   if(s.role === "result") return { role: "result", collapsed };
   if(s.role === "structure") return { role: "structure", collapsed };
   if(s.role === "theses") return { role: "theses", collapsed };
+  if(s.role === "corkboard") return { role: "corkboard", collapsed };
   return null;
 }
 function loadLayout(){
@@ -1944,6 +1958,7 @@ function buildSlotDOM(spec, i){
     spec.role === "result" ? "Результат" :
     spec.role === "structure" ? "Структура" :
     spec.role === "theses" ? "Тезисы" :
+    spec.role === "corkboard" ? "Корбоард" :
     "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
@@ -1954,10 +1969,12 @@ function buildSlotDOM(spec, i){
     spec.role === "result" ? "Результат" :
     spec.role === "structure" ? "Структура" :
     spec.role === "theses" ? "Тезисы · план" :
+    spec.role === "corkboard" ? "Корбоард" :
     "Вариант · " + spec.label;
   if(spec.role === "footnotes") slot.fnTitleEl = label;   // подпись «Сноски · окно»
   if(spec.role === "result") slot.resTitleEl = label;     // подпись «Результат · окно»
   if(spec.role === "structure") slot.olTitleEl = label;   // подпись «Структура · окно»
+  if(spec.role === "corkboard") slot.corkTitleEl = label; // подпись «Корбоард · окно»
   head.appendChild(label);
 
   // у оригинала, перевода и варианта — выбор команды, модели и кнопка запроса.
@@ -2012,7 +2029,7 @@ function buildSlotDOM(spec, i){
 
   // у показывающих/служебных окон (результат/структура/тезисы) кнопки сохранения нет;
   // у остальных — одинаковая «Сохранить» и индикатор несохранённого
-  if(spec.role !== "result" && spec.role !== "structure" && spec.role !== "theses"){
+  if(spec.role !== "result" && spec.role !== "structure" && spec.role !== "theses" && spec.role !== "corkboard"){
     const save = document.createElement("button");
     save.className = "mini-btn";
     save.dataset.action =
@@ -2093,7 +2110,7 @@ function makeEditor(slot, value){
     ta.addEventListener("input", () => { updateBackdrop(slot); applyFootnotesEdit(slot); });
   } else {
     const sync = () => syncActiveFromEditor(slot);
-    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); refreshResults(); refreshOutline(); });
+    ta.addEventListener("input", () => { updateBackdrop(slot); updateDirtyUI(); sync(); refreshFootnotes(false); refreshPreview(slot); refreshResults(); refreshOutline(); refreshCorkboard(); });
     // клик = выбор сектора: подсветка во всех окнах + доскролл окон-получателей
     ta.addEventListener("click", () => { syncActiveFromEditor(slot); scrollTargetsFrom(slot); jumpFootnoteAtCursor(slot); });
     ta.addEventListener("keyup", () => { sync(); jumpFootnoteAtCursor(slot); });
@@ -2267,6 +2284,7 @@ function setFnFollow(slot){
   refreshFootnotes(true);
   refreshResults();
   refreshOutline();
+  refreshCorkboard();
 }
 // показать в окнах сносок определения из ведомого окна; force — даже если
 // содержимое то же (смена ведомого окна, перерисовка)
@@ -2365,6 +2383,51 @@ function moveSection(slot, headStart, dir){
   ed.setSelectionRange(movedPos, movedPos);
   refreshOutline();
 }
+// корбоард: карточки разделов (## …) ведомого окна письма; перетаскивание мышью —
+// перестановка раздела, клик — прыжок
+function refreshCorkboard(){
+  const corks = state.slots.filter(s => s.role === "corkboard");
+  if(!corks.length) return;
+  const src = fnFollowSlot();
+  let html;
+  if(src && src.editor){
+    const text = src.editor.value;
+    const heads = parseBlocks(text).filter(b => b.type === "heading");
+    if(heads.length){
+      const secs = headingSections(text);
+      html = secs.map((s, i) => {
+        const head = heads[i];
+        const body = text.slice(head.end, s.end)
+          .replace(/<!--[\s\S]*?-->/g, " ").replace(/[#>*_`]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+        return `<div class="cork-card cork-l${Math.min(head.level, 4)}" draggable="true" data-idx="${i}" data-pos="${head.start}">` +
+          `<div class="cork-title">${esc(head.text || "(без названия)")}</div>` +
+          `<div class="cork-body">${esc(body)}</div></div>`;
+      }).join("");
+    } else html = "<p class='pv-empty'>Нет заголовков (## …) — нет карточек.</p>";
+  } else html = "<p class='pv-empty'>Поставьте курсор в окно письма.</p>";
+  for(const c of corks){
+    if(c.corkTitleEl) c.corkTitleEl.textContent = "Корбоард · " + (src ? slotKeyName(slotKeyOf(src)) : "нет окна");
+    if(c.corkEl) c.corkEl.innerHTML = html;
+  }
+}
+// переставить раздел fromIdx → перед toIdx (текст едет вместе с заголовком)
+function reorderSections(slot, fromIdx, toIdx){
+  if(!slot || !slot.editor) return;
+  const ed = slot.editor, text = ed.value;
+  const secs = headingSections(text);
+  if(fromIdx < 0 || fromIdx >= secs.length || toIdx < 0 || toIdx >= secs.length || fromIdx === toIdx) return;
+  const preamble = text.slice(0, secs[0].start);
+  const segs = secs.map(s => text.slice(s.start, s.end));
+  const moved = segs.splice(fromIdx, 1)[0];
+  segs.splice(toIdx, 0, moved);
+  ed.focus(); ed.setSelectionRange(0, text.length);
+  insertAtSelection(ed, preamble + segs.join(""));
+  let pos = preamble.length;
+  for(let i = 0; i < toIdx; i++) pos += segs[i].length;
+  ed.setSelectionRange(pos, pos);
+  refreshCorkboard(); refreshOutline();
+}
+
 // окно-тезисы: каркас/план хранится отдельно по документу (localStorage), в текст
 // статьи не попадает. Ключ — режим + источник + метка блока.
 function thesesKey(){
@@ -2483,6 +2546,16 @@ async function loadSlotFromDisk(slot, b){
     slot.thesesEl = ta;
     return;
   }
+  if(slot.role === "corkboard"){
+    // корбоард: карточки разделов ведомого окна письма (refreshCorkboard)
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ck = document.createElement("div");
+    ck.className = "pane-cork";
+    slot.body.appendChild(ck);
+    slot.corkEl = ck;
+    return;
+  }
   if(slot.role === "footnotes"){
     // своего файла нет — содержимое придёт из ведомого окна (refreshFootnotes)
     slot.fileHandle = null; slot.savedText = "";
@@ -2557,6 +2630,12 @@ function restoreSlot(slot, old){
     ta.addEventListener("input", () => saveThesesText(ta.value));
     slot.body.appendChild(ta);
     slot.thesesEl = ta;
+  } else if(slot.role === "corkboard"){
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ck = document.createElement("div");
+    ck.className = "pane-cork"; slot.body.appendChild(ck);
+    slot.corkEl = ck;               // содержимое перезальёт refreshCorkboard
   } else if(slot.role === "footnotes"){
     slot.fileHandle = null; slot.savedText = "";
     makeEditor(slot, "");           // содержимое перезальёт refreshFootnotes
@@ -2644,6 +2723,7 @@ async function renderSlots({ reload = false, reloadKeys = null } = {}){
   refreshFootnotes(true);   // окна сносок — содержимым ведомого окна
   refreshResults();         // окна-результаты — рендером ведомого окна
   refreshOutline();         // окна-структуры — планом по заголовкам
+  refreshCorkboard();       // окна-корбоард — карточками разделов
   recomputeFind(false);     // поиск — под содержимое нового раздела
 }
 
@@ -4220,6 +4300,9 @@ els.panes.addEventListener("click", (e) => {
   if(olj){ const s = fnFollowSlot(); if(s) jumpEditorTo(s, parseInt(olj.dataset.pos, 10)); return; }
   const olm = e.target.closest(".ol-mv");
   if(olm){ const s = fnFollowSlot(); if(s) moveSection(s, parseInt(olm.dataset.pos, 10), olm.classList.contains("ol-up") ? -1 : 1); return; }
+  // окно-корбоард: клик по карточке — прыжок к разделу в окне письма
+  const cc = e.target.closest(".cork-card");
+  if(cc){ const s = fnFollowSlot(); if(s) jumpEditorTo(s, parseInt(cc.dataset.pos, 10)); return; }
   const tool = e.target.closest("[data-tool]");
   if(tool){
     const pane = tool.closest(".pane");
@@ -4280,6 +4363,42 @@ els.panes.addEventListener("click", (e) => {
     return;
   }
   if(e.target.closest("[data-action='start-translation']")) startTranslation();
+});
+
+// корбоард: перетаскивание карточки — перестановка раздела в окне письма
+let corkDragIdx = null;
+els.panes.addEventListener("dragstart", (e) => {
+  const card = e.target.closest(".cork-card");
+  if(!card){ corkDragIdx = null; return; }
+  corkDragIdx = parseInt(card.dataset.idx, 10);
+  card.classList.add("cork-drag");
+  e.dataTransfer.effectAllowed = "move";
+  try { e.dataTransfer.setData("text/plain", String(corkDragIdx)); } catch(_){}
+});
+els.panes.addEventListener("dragover", (e) => {
+  if(corkDragIdx == null) return;
+  const card = e.target.closest(".cork-card");
+  if(!card) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  for(const el of els.panes.querySelectorAll(".cork-card.cork-over")) el.classList.remove("cork-over");
+  card.classList.add("cork-over");
+});
+els.panes.addEventListener("drop", (e) => {
+  if(corkDragIdx == null) return;
+  const card = e.target.closest(".cork-card");
+  for(const el of els.panes.querySelectorAll(".cork-card.cork-over")) el.classList.remove("cork-over");
+  if(card){
+    e.preventDefault();
+    const toIdx = parseInt(card.dataset.idx, 10);
+    const s = fnFollowSlot();
+    if(s) reorderSections(s, corkDragIdx, toIdx);
+  }
+  corkDragIdx = null;
+});
+els.panes.addEventListener("dragend", () => {
+  for(const el of els.panes.querySelectorAll(".cork-card.cork-drag, .cork-card.cork-over")) el.classList.remove("cork-drag", "cork-over");
+  corkDragIdx = null;
 });
 
 // выбор модели/команды в окне (вариант или перевод) — пишем в раскладку (localStorage)
