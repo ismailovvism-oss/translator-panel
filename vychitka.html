@@ -458,6 +458,9 @@
   .ol-l3 .ol-jump{ padding-left:18px; color:var(--ink-soft); }
   .ol-l4 .ol-jump{ padding-left:30px; color:var(--ink-soft); }
   .pane-outline .pv-empty{ color:var(--ink-faint); padding:6px; }
+  /* окно-тезисы: каркас/план статьи (хранится отдельно по документу) */
+  .theses-edit{ flex:1 1 auto; min-height:0; width:100%; border:none; resize:none; padding:8px 12px; font-family:var(--ui); font-size:13px; line-height:1.6; background:transparent; color:var(--ink); outline:none; }
+  .theses-edit::placeholder{ color:var(--ink-faint); }
   .pane[data-role="source"] .pane-preview{ direction:rtl; font-family:var(--ar); font-size:1.3rem; line-height:1.95; }
   .pane-preview p{ margin:.45em 0; }
   .pane-preview h3.pv-h{ font-size:1.18em; font-weight:600; margin:.7em 0 .35em; }
@@ -576,6 +579,7 @@
         <option value="footnotes">Сноски</option>
         <option value="result">Результат (рендер)</option>
         <option value="structure">Структура (план)</option>
+        <option value="theses">Тезисы (каркас)</option>
       </select>
     </label>
     <label id="popLabelWrap" hidden>Ярлык источника
@@ -1193,6 +1197,7 @@ function normalizeSpec(s){
   if(s.role === "footnotes") return { role: "footnotes", collapsed };
   if(s.role === "result") return { role: "result", collapsed };
   if(s.role === "structure") return { role: "structure", collapsed };
+  if(s.role === "theses") return { role: "theses", collapsed };
   return null;
 }
 function loadLayout(){
@@ -1938,6 +1943,7 @@ function buildSlotDOM(spec, i){
     spec.role === "footnotes" ? "Сноски" :
     spec.role === "result" ? "Результат" :
     spec.role === "structure" ? "Структура" :
+    spec.role === "theses" ? "Тезисы" :
     "Вариант: " + spec.label;
   const label = document.createElement("span");
   label.className = "pane-label";
@@ -1947,6 +1953,7 @@ function buildSlotDOM(spec, i){
     spec.role === "footnotes" ? "Сноски" :
     spec.role === "result" ? "Результат" :
     spec.role === "structure" ? "Структура" :
+    spec.role === "theses" ? "Тезисы · план" :
     "Вариант · " + spec.label;
   if(spec.role === "footnotes") slot.fnTitleEl = label;   // подпись «Сноски · окно»
   if(spec.role === "result") slot.resTitleEl = label;     // подпись «Результат · окно»
@@ -2003,9 +2010,9 @@ function buildSlotDOM(spec, i){
     head.appendChild(sync);
   }
 
-  // у каждого окна (кроме «результата»/«структуры» — они только показывают)
-  // одинаковая кнопка сохранения и индикатор несохранённого; окно пишет в свой файл
-  if(spec.role !== "result" && spec.role !== "structure"){
+  // у показывающих/служебных окон (результат/структура/тезисы) кнопки сохранения нет;
+  // у остальных — одинаковая «Сохранить» и индикатор несохранённого
+  if(spec.role !== "result" && spec.role !== "structure" && spec.role !== "theses"){
     const save = document.createElement("button");
     save.className = "mini-btn";
     save.dataset.action =
@@ -2358,6 +2365,18 @@ function moveSection(slot, headStart, dir){
   ed.setSelectionRange(movedPos, movedPos);
   refreshOutline();
 }
+// окно-тезисы: каркас/план хранится отдельно по документу (localStorage), в текст
+// статьи не попадает. Ключ — режим + источник + метка блока.
+function thesesKey(){
+  const b = state.current; if(!b) return null;
+  const scope = state.mode === "library" ? "book:" + (state.book && state.book.bookId || "")
+    : state.mode === "file" ? "file:" + b.label
+    : "folder:" + ((state.rootHandle && state.rootHandle.name) || "draft");
+  return "vychitka-plan|" + scope + "|" + b.label;
+}
+function loadThesesText(){ try{ const k = thesesKey(); return k ? (localStorage.getItem(k) || "") : ""; }catch{ return ""; } }
+function saveThesesText(text){ try{ const k = thesesKey(); if(k) localStorage.setItem(k, text); }catch{} }
+
 // правка в окне сносок: тело ведомого окна остаётся, хвост определений заменяется
 function applyFootnotesEdit(fn){
   const src = fnFollowSlot();
@@ -2451,6 +2470,19 @@ async function loadSlotFromDisk(slot, b){
     slot.olEl = ol;
     return;
   }
+  if(slot.role === "theses"){
+    // окно-тезисы: каркас аргументации текущего документа (хранится в localStorage)
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ta = document.createElement("textarea");
+    ta.className = "theses-edit"; ta.spellcheck = true;
+    ta.placeholder = "Тезисы и план статьи…\n- [ ] тезис, который надо раскрыть\n- [x] уже раскрытый\n\n(хранится отдельно по документу, в текст статьи не попадает)";
+    ta.value = loadThesesText();
+    ta.addEventListener("input", () => saveThesesText(ta.value));
+    slot.body.appendChild(ta);
+    slot.thesesEl = ta;
+    return;
+  }
   if(slot.role === "footnotes"){
     // своего файла нет — содержимое придёт из ведомого окна (refreshFootnotes)
     slot.fileHandle = null; slot.savedText = "";
@@ -2515,6 +2547,16 @@ function restoreSlot(slot, old){
     const ol = document.createElement("div");
     ol.className = "pane-outline"; slot.body.appendChild(ol);
     slot.olEl = ol;                 // содержимое перезальёт refreshOutline
+  } else if(slot.role === "theses"){
+    slot.fileHandle = null; slot.savedText = "";
+    slot.body.innerHTML = "";
+    const ta = document.createElement("textarea");
+    ta.className = "theses-edit"; ta.spellcheck = true;
+    ta.placeholder = "Тезисы и план статьи…\n- [ ] тезис\n- [x] раскрыто";
+    ta.value = loadThesesText();
+    ta.addEventListener("input", () => saveThesesText(ta.value));
+    slot.body.appendChild(ta);
+    slot.thesesEl = ta;
   } else if(slot.role === "footnotes"){
     slot.fileHandle = null; slot.savedText = "";
     makeEditor(slot, "");           // содержимое перезальёт refreshFootnotes
