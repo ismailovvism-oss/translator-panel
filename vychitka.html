@@ -482,6 +482,12 @@
   .pane-preview .pv-callout{ margin:.6em 0; border:1px solid var(--line); border-inline-start:3px solid var(--accent); border-radius:6px; overflow:hidden; }
   .pane-preview .pv-callout-t{ font-weight:600; padding:.3em .7em; background:var(--sel); }
   .pane-preview .pv-callout > div:last-child{ padding:.25em .7em; }
+  /* сворачиваемые callout’ы: [!тип]+ (раскрыт) / [!тип]- (свёрнут) */
+  .pane-preview details.pv-callout-fold > summary.pv-callout-t{ cursor:pointer; list-style:none; user-select:none; display:flex; align-items:center; gap:.4em; }
+  .pane-preview details.pv-callout-fold > summary.pv-callout-t::-webkit-details-marker{ display:none; }
+  .pane-preview details.pv-callout-fold > summary.pv-callout-t::before{ content:"\25B8"; font-size:.85em; flex:0 0 auto; transition:transform .15s; }
+  .pane-preview details.pv-callout-fold[open] > summary.pv-callout-t::before{ transform:rotate(90deg); }
+  .pane-preview details.pv-callout-fold:not([open]) > div:last-child{ display:none; }
   .pane-preview .pv-note{ margin:.6em 0; padding:.2em .7em; border-inline-start:3px solid var(--note); background:rgba(63,127,147,.06); color:var(--ink-soft); }
   .pane-preview .pv-fn{ color:var(--accent); font-size:.7em; vertical-align:super; }
   .pane-preview mark.pv-q{ background:var(--mark); color:var(--ink); border-radius:2px; }
@@ -3960,9 +3966,12 @@ function pvBlocks(lines){
   while(i < lines.length){
     if(isQ(lines[i])){
       const run = []; while(i < lines.length && isQ(lines[i])){ run.push(lines[i].replace(/^>\s?/, "")); i++; }
-      const m = run[0] && run[0].match(/^\[!([\w-]+)\]\s*(.*)$/);
-      if(m){ const type = m[1].toLowerCase(), title = (m[2] || "").trim() || type;
-        out.push(`<div class="pv-callout pv-${type}"><div class="pv-callout-t">${pvInline(title)}</div><div>${pvBlocks(run.slice(1)).join("")}</div></div>`); }
+      // [!тип] статичный, [!тип]+ сворачиваемый (раскрыт), [!тип]- сворачиваемый (свёрнут)
+      const m = run[0] && run[0].match(/^\[!([\w-]+)\]([+-]?)\s*(.*)$/);
+      if(m){ const type = m[1].toLowerCase(), fold = m[2], title = (m[3] || "").trim() || type;
+        const body = `<div>${pvBlocks(run.slice(1)).join("")}</div>`;
+        if(fold) out.push(`<details class="pv-callout pv-${type} pv-callout-fold"${fold === "+" ? " open" : ""}><summary class="pv-callout-t">${pvInline(title)}</summary>${body}</details>`);
+        else out.push(`<div class="pv-callout pv-${type}"><div class="pv-callout-t">${pvInline(title)}</div>${body}</div>`); }
       else out.push("<blockquote>" + pvBlocks(run).join("") + "</blockquote>");
       continue;
     }
