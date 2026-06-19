@@ -222,7 +222,7 @@
   .modal-box h3{ margin:0; font-family:var(--ru); font-weight:600; }
   .modal-box label{ display:flex; flex-direction:column; gap:5px; font-size:13px; color:var(--ink-soft); }
   .modal-box .hint{ font-size:11px; color:var(--ink-faint); }
-  .modal-box textarea, .modal-box input{
+  .modal-box textarea, .modal-box input, .modal-box select{
     font-family:inherit; font-size:13px; color:var(--ink); background:#fff;
     border:1px solid var(--line); border-radius:7px; padding:8px 10px;
   }
@@ -757,6 +757,15 @@
         </datalist>
       </label>
     </div>
+    <label>Статус книги (бейдж на полке)
+      <span class="hint">метка доверия — видна читателю на обложке</span>
+      <select id="pubReview">
+        <option value="">— не указывать</option>
+        <option value="approved">✓ Одобрено администрацией</option>
+        <option value="caution">⚠ Осторожно, требует проверки</option>
+        <option value="draft">🚧 В работе</option>
+      </select>
+    </label>
     <label>Обложка
       <span class="hint">картинка для полки; пропустишь — будет авто-заглушка</span>
       <input id="pubCover" type="file" accept="image/*">
@@ -1023,7 +1032,7 @@ const els = {
   pubCat: $("pubCat"), pubCatList: $("pubCatList"), pubAuthor: $("pubAuthor"),
   pubDesc: $("pubDesc"), pubTags: $("pubTags"), pubCover: $("pubCover"),
   pubMadhhab: $("pubMadhhab"), pubGenre: $("pubGenre"), pubVerifiedOnly: $("pubVerifiedOnly"),
-  pubCancel: $("pubCancel"), pubGo: $("pubGo"),
+  pubReview: $("pubReview"), pubCancel: $("pubCancel"), pubGo: $("pubGo"),
 };
 
 /* ===================== утилиты ===================== */
@@ -1599,7 +1608,7 @@ async function publishToLibrary(){
   els.pubSrc.value = "ar"; els.pubTrans.value = "ru";
   els.pubCat.value = ""; els.pubAuthor.value = ""; els.pubDesc.value = ""; els.pubTags.value = "";
   els.pubMadhhab.value = ""; els.pubGenre.value = ""; els.pubVerifiedOnly.checked = false;
-  els.pubCover.value = "";
+  els.pubReview.value = ""; els.pubCover.value = "";
   els.pubModal.hidden = false; els.pubId.focus();
 }
 // при вводе id, совпадающего с существующей книгой — подтянуть её метаданные
@@ -1613,6 +1622,7 @@ async function pubPrefillById(){
   if(Array.isArray(prev.authors) && prev.authors[0]) els.pubAuthor.value = prev.authors[0];
   if(Array.isArray(prev.madhhab)) els.pubMadhhab.value = prev.madhhab.join(", ");
   if(Array.isArray(prev.genre)) els.pubGenre.value = prev.genre.join(", ");
+  if(prev.review) els.pubReview.value = prev.review;
   const pb = await pubReadJSON(pubCtx.booksDir, [id, "book.json"]);
   if(pb){
     if(pb.description) els.pubDesc.value = pb.description;
@@ -1701,6 +1711,7 @@ async function runPublish(){
     if(author) entry.authors = [author];
     if(madhhab.length) entry.madhhab = madhhab;
     if(genre.length) entry.genre = genre;
+    if(els.pubReview.value) entry.review = els.pubReview.value;
     if(coverPath) entry.cover = coverPath;
     idx.books = idx.books.filter(x => x.id !== id);
     idx.books.push(entry);
