@@ -232,6 +232,8 @@
   .pub-row{ display:flex; gap:12px; }
   .pub-row label{ flex:1 1 0; min-width:0; }
   .modal-box input[type="file"]{ padding:6px; background:var(--bg); }
+  .modal-box label.pub-check{ flex-direction:row; align-items:flex-start; gap:8px; cursor:pointer; }
+  .modal-box label.pub-check input{ width:auto; margin-top:2px; }
   .req-status{ font-size:13px; min-height:18px; color:var(--ink-soft); }
   .req-status.loading{ color:var(--st-review); }
   .req-status.error{ color:#9a2b1c; }
@@ -738,9 +740,30 @@
       <span class="hint">через запятую (необязательно)</span>
       <input id="pubTags" type="text" placeholder="таухид, апологетика">
     </label>
+    <div class="pub-row">
+      <label>Мазхаб
+        <span class="hint">фасет-фильтр (необязательно)</span>
+        <input id="pubMadhhab" type="text" list="pubMadhhabList" placeholder="Ханафитский">
+        <datalist id="pubMadhhabList">
+          <option value="Ханафитский"><option value="Маликитский"><option value="Шафиитский">
+          <option value="Ханбалитский"><option value="Захиритский"><option value="Сравнительный">
+        </datalist>
+      </label>
+      <label>Жанр
+        <span class="hint">через запятую (рудуд, шарх…)</span>
+        <input id="pubGenre" type="text" list="pubGenreList" placeholder="Рудуд">
+        <datalist id="pubGenreList">
+          <option value="Рудуд"><option value="Шарх"><option value="Матн"><option value="Фатавы"><option value="Рисаля">
+        </datalist>
+      </label>
+    </div>
     <label>Обложка
       <span class="hint">картинка для полки; пропустишь — будет авто-заглушка</span>
       <input id="pubCover" type="file" accept="image/*">
+    </label>
+    <label class="pub-check">
+      <input id="pubVerifiedOnly" type="checkbox">
+      <span>Только готовые разделы (статус <b>verified</b>) — недоготовые пропустить</span>
     </label>
     <div class="modal-actions">
       <button id="pubCancel" class="btn">Отмена</button>
@@ -999,6 +1022,7 @@ const els = {
   pubTitle: $("pubTitle"), pubSrc: $("pubSrc"), pubTrans: $("pubTrans"),
   pubCat: $("pubCat"), pubCatList: $("pubCatList"), pubAuthor: $("pubAuthor"),
   pubDesc: $("pubDesc"), pubTags: $("pubTags"), pubCover: $("pubCover"),
+  pubMadhhab: $("pubMadhhab"), pubGenre: $("pubGenre"), pubVerifiedOnly: $("pubVerifiedOnly"),
   pubCancel: $("pubCancel"), pubGo: $("pubGo"),
 };
 
@@ -1574,6 +1598,7 @@ async function publishToLibrary(){
   els.pubId.value = ""; els.pubTitle.value = (state.blocks[0] && state.blocks[0].title) || "";
   els.pubSrc.value = "ar"; els.pubTrans.value = "ru";
   els.pubCat.value = ""; els.pubAuthor.value = ""; els.pubDesc.value = ""; els.pubTags.value = "";
+  els.pubMadhhab.value = ""; els.pubGenre.value = ""; els.pubVerifiedOnly.checked = false;
   els.pubCover.value = "";
   els.pubModal.hidden = false; els.pubId.focus();
 }
@@ -1586,6 +1611,8 @@ async function pubPrefillById(){
   if(Array.isArray(prev.category)) els.pubCat.value = prev.category.join(" / ");
   if(Array.isArray(prev.tags)) els.pubTags.value = prev.tags.join(", ");
   if(Array.isArray(prev.authors) && prev.authors[0]) els.pubAuthor.value = prev.authors[0];
+  if(Array.isArray(prev.madhhab)) els.pubMadhhab.value = prev.madhhab.join(", ");
+  if(Array.isArray(prev.genre)) els.pubGenre.value = prev.genre.join(", ");
   const pb = await pubReadJSON(pubCtx.booksDir, [id, "book.json"]);
   if(pb){
     if(pb.description) els.pubDesc.value = pb.description;
@@ -1607,14 +1634,19 @@ async function runPublish(){
   const author = els.pubAuthor.value.trim();
   const description = els.pubDesc.value.trim();
   const tags = els.pubTags.value.split(",").map(s => s.trim()).filter(Boolean);
+  const madhhab = els.pubMadhhab.value.split(",").map(s => s.trim()).filter(Boolean);
+  const genre = els.pubGenre.value.split(",").map(s => s.trim()).filter(Boolean);
   const coverFile = els.pubCover.files[0] || null;
   const titleRu = els.pubTitle.value.trim();
+  // «только готовые»: берём лишь разделы со статусом verified
+  const blocks = els.pubVerifiedOnly.checked ? state.blocks.filter(b => b.status === "verified") : state.blocks;
+  if(!blocks.length){ toast("Нет разделов со статусом verified — снимите галочку или доведите разделы", true); return; }
 
   els.pubGo.disabled = true;
   try{
     const chapters = []; const mismatches = [];
     let bookTitle = titleRu;
-    for(const b of state.blocks){
+    for(const b of blocks){
       const file = b.label + ".md";
       let ru = { content:"", sectors:0 }, title = "";
       if(transLang && b.trHandle){
@@ -1667,6 +1699,8 @@ async function runPublish(){
     if(category.length) entry.category = category;
     if(tags.length) entry.tags = tags;
     if(author) entry.authors = [author];
+    if(madhhab.length) entry.madhhab = madhhab;
+    if(genre.length) entry.genre = genre;
     if(coverPath) entry.cover = coverPath;
     idx.books = idx.books.filter(x => x.id !== id);
     idx.books.push(entry);
@@ -4440,7 +4474,8 @@ els.nbCreate.addEventListener("click", async () => {
 // форма публикации в библиотеку
 function closePublish(){ els.pubModal.hidden = true; pubCtx = null; }
 els.pubCancel.addEventListener("click", closePublish);
-els.pubModal.addEventListener("click", (e) => { if(e.target === els.pubModal) closePublish(); });
+// НЕ закрываем форму публикации по клику мимо неё (легко промахнуться и потерять
+// заполненное) — только «Отмена» или Escape. Клик по фону гасим.
 els.pubId.addEventListener("change", () => { pubPrefillById(); });
 els.pubGo.addEventListener("click", runPublish);
 
