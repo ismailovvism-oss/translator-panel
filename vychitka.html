@@ -229,6 +229,9 @@
   .modal-box textarea{ resize:vertical; min-height:120px; }
   .modal-box textarea:focus, .modal-box input:focus{ outline:none; border-color:var(--accent); }
   .modal-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:4px; }
+  .pub-row{ display:flex; gap:12px; }
+  .pub-row label{ flex:1 1 0; min-width:0; }
+  .modal-box input[type="file"]{ padding:6px; background:var(--bg); }
   .req-status{ font-size:13px; min-height:18px; color:var(--ink-soft); }
   .req-status.loading{ color:var(--st-review); }
   .req-status.error{ color:#9a2b1c; }
@@ -698,6 +701,54 @@
   </div>
 </div>
 
+<div class="modal" id="pubModal" hidden>
+  <div class="modal-box">
+    <h3>Опубликовать в библиотеку</h3>
+    <p class="hint" id="pubFolderNote"></p>
+    <div class="pub-row">
+      <label>ID книги
+        <span class="hint">папка под books/ — латиницей. Тот же id = обновить книгу</span>
+        <input id="pubId" type="text" placeholder="tawfiq">
+      </label>
+      <label>Название книги (ru)
+        <input id="pubTitle" type="text" placeholder="Заголовок на полке">
+      </label>
+    </div>
+    <div class="pub-row">
+      <label>Язык оригинала
+        <input id="pubSrc" type="text" placeholder="ar" value="ar">
+      </label>
+      <label>Язык перевода
+        <span class="hint">пусто — без перевода</span>
+        <input id="pubTrans" type="text" placeholder="ru" value="ru">
+      </label>
+    </div>
+    <label>Раздел (категория)
+      <span class="hint">выбери из списка или впиши новую; вложенность через « / »</span>
+      <input id="pubCat" type="text" list="pubCatList" placeholder="Вероучение (Акыда) / Защита имамов">
+      <datalist id="pubCatList"></datalist>
+    </label>
+    <label>Автор
+      <input id="pubAuthor" type="text" placeholder="Имя автора (необязательно)">
+    </label>
+    <label>Аннотация
+      <textarea id="pubDesc" rows="3" placeholder="Короткое описание книги (необязательно)"></textarea>
+    </label>
+    <label>Теги
+      <span class="hint">через запятую (необязательно)</span>
+      <input id="pubTags" type="text" placeholder="таухид, апологетика">
+    </label>
+    <label>Обложка
+      <span class="hint">картинка для полки; пропустишь — будет авто-заглушка</span>
+      <input id="pubCover" type="file" accept="image/*">
+    </label>
+    <div class="modal-actions">
+      <button id="pubCancel" class="btn">Отмена</button>
+      <button id="pubGo" class="btn primary">Опубликовать</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="ghModal" hidden>
   <div class="modal-box">
     <h3>Открыть репозиторий на GitHub</h3>
@@ -944,6 +995,11 @@ const els = {
   panes: $("panes"), emptyState: $("emptyState"), toast: $("toast"),
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
   nbTitle: $("nbTitle"), nbCreate: $("nbCreate"), nbCancel: $("nbCancel"),
+  pubModal: $("pubModal"), pubFolderNote: $("pubFolderNote"), pubId: $("pubId"),
+  pubTitle: $("pubTitle"), pubSrc: $("pubSrc"), pubTrans: $("pubTrans"),
+  pubCat: $("pubCat"), pubCatList: $("pubCatList"), pubAuthor: $("pubAuthor"),
+  pubDesc: $("pubDesc"), pubTags: $("pubTags"), pubCover: $("pubCover"),
+  pubCancel: $("pubCancel"), pubGo: $("pubGo"),
 };
 
 /* ===================== утилиты ===================== */
@@ -1487,22 +1543,77 @@ async function pubWrite(dirHandle, segs, content){
   const w = await fh.createWritable(); await w.write(content); await w.close();
 }
 const RTL_CODES = ["ar", "he", "fa", "ur", "ps", "sd"];
+// прочитать JSON-файл по пути [seg…] внутри dirHandle (null если нет/битый)
+async function pubReadJSON(dirHandle, segs){
+  try{
+    let dir = dirHandle;
+    for(const seg of segs.slice(0, -1)) dir = await dir.getDirectoryHandle(seg);
+    const fh = await dir.getFileHandle(segs[segs.length-1]);
+    return JSON.parse(await (await fh.getFile()).text());
+  }catch{ return null; }
+}
+let pubCtx = null;   // { booksDir, idx } — между выбором папки и подтверждением формы
+// Шаг 1: выбрать папку books/ читалки, подтянуть реестр и открыть форму публикации
 async function publishToLibrary(){
   if(state.mode !== "folder"){ toast("«Опубликовать в библиотеку» — из папочного режима (source/translation)", true); return; }
   if(!state.blocks.length){ toast("Нет блоков для публикации", true); return; }
   let booksDir;
   try{ booksDir = await window.showDirectoryPicker({ id: "vychitka-library", mode: "readwrite" }); }
   catch(e){ if(e && e.name === "AbortError") return; toast("Не удалось открыть папку: " + e.message, true); return; }
-  const id = (prompt("ID книги (имя папки внутри books/), напр. «tawfiq»:", "") || "").trim();
-  if(!id) return;
-  if(BAD_NAME_RE.test(id)){ toast("Недопустимый id (нельзя / \\ : * ? \" < > |)", true); return; }
-  const srcLang = (prompt("Язык оригинала (код), напр. «ar»:", "ar") || "").trim();
-  if(!srcLang) return;
-  const transLang = (prompt("Язык перевода (код), напр. «ru». Пусто — без перевода:", "ru") || "").trim();
+  let idx = await pubReadJSON(booksDir, ["index.json"]);
+  if(!idx || !Array.isArray(idx.books)) idx = { title: idx && idx.title || "Библиотека", books: Array.isArray(idx && idx.books) ? idx.books : [] };
+  pubCtx = { booksDir, idx };
+  // подсказка-страховка: видно, та ли это папка (сколько книг уже в реестре)
+  els.pubFolderNote.textContent = `Папка «${booksDir.name}» · книг в реестре: ${idx.books.length}` +
+    (idx.books.length ? ` (${idx.books.map(b => b.id).join(", ")})` : " — пусто, это точно папка books/ читалки?");
+  // список существующих категорий → в datalist (полный путь через « / »)
+  const cats = new Set();
+  for(const b of idx.books) if(Array.isArray(b.category) && b.category.length) cats.add(b.category.join(" / "));
+  els.pubCatList.innerHTML = [...cats].sort().map(c => `<option value="${esc(c)}">`).join("");
+  // префилл: название — из первого блока; языки ar/ru
+  els.pubId.value = ""; els.pubTitle.value = (state.blocks[0] && state.blocks[0].title) || "";
+  els.pubSrc.value = "ar"; els.pubTrans.value = "ru";
+  els.pubCat.value = ""; els.pubAuthor.value = ""; els.pubDesc.value = ""; els.pubTags.value = "";
+  els.pubCover.value = "";
+  els.pubModal.hidden = false; els.pubId.focus();
+}
+// при вводе id, совпадающего с существующей книгой — подтянуть её метаданные
+async function pubPrefillById(){
+  if(!pubCtx) return;
+  const id = els.pubId.value.trim();
+  const prev = pubCtx.idx.books.find(x => x.id === id);
+  if(!prev) return;
+  if(Array.isArray(prev.category)) els.pubCat.value = prev.category.join(" / ");
+  if(Array.isArray(prev.tags)) els.pubTags.value = prev.tags.join(", ");
+  if(Array.isArray(prev.authors) && prev.authors[0]) els.pubAuthor.value = prev.authors[0];
+  const pb = await pubReadJSON(pubCtx.booksDir, [id, "book.json"]);
+  if(pb){
+    if(pb.description) els.pubDesc.value = pb.description;
+    if(pb.author && !els.pubAuthor.value) els.pubAuthor.value = pb.author.ru || Object.values(pb.author)[0] || "";
+    if(pb.title){ const tv = pb.title.ru || Object.values(pb.title)[0]; if(tv && !state.blocks[0].title) els.pubTitle.value = tv; }
+  }
+}
+// Шаг 2: собрать книгу по форме и записать (главы + book.json + обложка + index.json)
+async function runPublish(){
+  if(!pubCtx) return;
+  const { booksDir, idx } = pubCtx;
+  const id = els.pubId.value.trim();
+  if(!id){ toast("Укажите ID книги", true); els.pubId.focus(); return; }
+  if(BAD_NAME_RE.test(id)){ toast("Недопустимый id (нельзя / \\ : * ? \" < > |)", true); els.pubId.focus(); return; }
+  const srcLang = els.pubSrc.value.trim();
+  if(!srcLang){ toast("Укажите язык оригинала", true); els.pubSrc.focus(); return; }
+  const transLang = els.pubTrans.value.trim();
+  const category = els.pubCat.value.split("/").map(s => s.trim()).filter(Boolean);
+  const author = els.pubAuthor.value.trim();
+  const description = els.pubDesc.value.trim();
+  const tags = els.pubTags.value.split(",").map(s => s.trim()).filter(Boolean);
+  const coverFile = els.pubCover.files[0] || null;
+  const titleRu = els.pubTitle.value.trim();
 
-  const chapters = []; const mismatches = [];
-  let bookTitle = "";
+  els.pubGo.disabled = true;
   try{
+    const chapters = []; const mismatches = [];
+    let bookTitle = titleRu;
     for(const b of state.blocks){
       const file = b.label + ".md";
       let ru = { content:"", sectors:0 }, title = "";
@@ -1526,21 +1637,45 @@ async function publishToLibrary(){
       if(!bookTitle && title) bookTitle = title;
     }
     const languages = transLang ? [srcLang, transLang] : [srcLang];
+    // book.json: НАСЛЕДУЕМ прежние поля (author/description/обложечные настройки не
+    // теряем при повторной публикации), перезаписываем только производные от статьи
+    const prevBook = (await pubReadJSON(booksDir, [id, "book.json"])) || {};
+    const titleLang = transLang || srcLang;
     const book = {
-      bookId: id, title: { [transLang || srcLang]: bookTitle || id },
+      ...prevBook,
+      bookId: id,
+      title: { ...(prevBook.title || {}), [titleLang]: bookTitle || (prevBook.title && prevBook.title[titleLang]) || id },
       languages, rtl: RTL_CODES.includes(srcLang) ? [srcLang] : [], chapters,
     };
+    if(author) book.author = { ...(book.author || {}), [titleLang]: author };
+    if(description) book.description = description;
     await pubWrite(booksDir, [id, "book.json"], JSON.stringify(book, null, 2) + "\n");
-    // реестр библиотеки
-    let idx = { title: "Библиотека", books: [] };
-    try{ const fh = await booksDir.getFileHandle("index.json"); idx = JSON.parse(await (await fh.getFile()).text()); }catch{}
+
+    // обложка: выбранную картинку кладём как cover.<ext>; путь — в запись реестра.
+    // не выбрал — оставляем прежнюю обложку (если была), читалка иначе рисует заглушку
+    const prevEntry = idx.books.find(x => x.id === id) || {};
+    let coverPath = prevEntry.cover || null;
+    if(coverFile){
+      const ext = ((coverFile.name.match(/\.([a-z0-9]+)$/i) || [])[1] || (coverFile.type.split("/")[1]) || "jpg").toLowerCase();
+      await pubWrite(booksDir, [id, "cover." + ext], coverFile);
+      coverPath = `books/${id}/cover.${ext}`;
+    }
+
+    // index.json: запись книги — наследуем прежние поля, обновляем заданные в форме
     if(!Array.isArray(idx.books)) idx.books = [];
-    const prev = idx.books.find(x => x.id === id) || {};
+    const entry = { ...prevEntry, id, base: `books/${id}/`, title: book.title, langs: languages };
+    if(category.length) entry.category = category;
+    if(tags.length) entry.tags = tags;
+    if(author) entry.authors = [author];
+    if(coverPath) entry.cover = coverPath;
     idx.books = idx.books.filter(x => x.id !== id);
-    idx.books.push({ ...prev, id, base: `books/${id}/`, title: book.title, langs: languages });
+    idx.books.push(entry);
     await pubWrite(booksDir, ["index.json"], JSON.stringify(idx, null, 2) + "\n");
-  }catch(e){ console.error(e); toast("Ошибка публикации: " + e.message, true); return; }
-  toast(`Опубликовано: ${chapters.length} глав${mismatches.length ? `; без оригинала (нет паритета): ${mismatches.length}` : ""}`);
+
+    els.pubModal.hidden = true; pubCtx = null;
+    toast(`Опубликовано «${id}»: ${chapters.length} глав${mismatches.length ? `; без оригинала (нет паритета): ${mismatches.length}` : ""}. Осталось закоммитить и запушить читалку.`);
+  }catch(e){ console.error(e); toast("Ошибка публикации: " + e.message, true); }
+  finally{ els.pubGo.disabled = false; }
 }
 
 /* ---- черновик без папки: сразу даём редактируемые окна, папку выберем при
@@ -4302,6 +4437,13 @@ els.nbCreate.addEventListener("click", async () => {
   if(await createBlock(label, els.nbTitle.value.trim(), els.nbSource.value)) closeNewBlock();
 });
 
+// форма публикации в библиотеку
+function closePublish(){ els.pubModal.hidden = true; pubCtx = null; }
+els.pubCancel.addEventListener("click", closePublish);
+els.pubModal.addEventListener("click", (e) => { if(e.target === els.pubModal) closePublish(); });
+els.pubId.addEventListener("change", () => { pubPrefillById(); });
+els.pubGo.addEventListener("click", runPublish);
+
 // настройки
 els.settingsBtn.addEventListener("click", openSettings);
 els.setCancel.addEventListener("click", closeSettings);
@@ -4555,6 +4697,7 @@ document.addEventListener("keydown", (e) => {
     if(!els.calloutPop.hidden) closeCalloutPop();
     if(!els.openPop.hidden) els.openPop.hidden = true;
     if(!els.modal.hidden) closeNewBlock();
+    if(!els.pubModal.hidden) closePublish();
     if(!els.settingsModal.hidden) closeSettings();
     if(!els.reqModal.hidden) closeRequest();
     if(!els.ghModal.hidden) closeGhModal();
