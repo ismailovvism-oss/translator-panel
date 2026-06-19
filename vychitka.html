@@ -234,6 +234,8 @@
   .modal-box input[type="file"]{ padding:6px; background:var(--bg); }
   .modal-box label.pub-check{ flex-direction:row; align-items:flex-start; gap:8px; cursor:pointer; }
   .modal-box label.pub-check input{ width:auto; margin-top:2px; }
+  #pubIdNote.pub-id-update{ color:#3f8f54; font-weight:600; }
+  #pubIdNote.pub-id-new{ color:#c9821e; font-weight:600; }
   .req-status{ font-size:13px; min-height:18px; color:var(--ink-soft); }
   .req-status.loading{ color:var(--st-review); }
   .req-status.error{ color:#9a2b1c; }
@@ -709,8 +711,9 @@
     <p class="hint" id="pubFolderNote"></p>
     <div class="pub-row">
       <label>ID книги
-        <span class="hint">папка под books/ — латиницей. Тот же id = обновить книгу</span>
-        <input id="pubId" type="text" placeholder="tawfiq">
+        <span class="hint" id="pubIdNote">папка под books/ — латиницей. Тот же id = обновить книгу</span>
+        <input id="pubId" type="text" list="pubIdList" placeholder="tawfiq">
+        <datalist id="pubIdList"></datalist>
       </label>
       <label>Название книги (ru)
         <input id="pubTitle" type="text" placeholder="Заголовок на полке">
@@ -757,15 +760,24 @@
         </datalist>
       </label>
     </div>
-    <label>Статус книги (бейдж на полке)
-      <span class="hint">метка доверия — видна читателю на обложке</span>
-      <select id="pubReview">
-        <option value="">— не указывать</option>
-        <option value="approved">✓ Одобрено администрацией</option>
-        <option value="caution">⚠ Осторожно, требует проверки</option>
-        <option value="draft">🚧 В работе</option>
-      </select>
-    </label>
+    <div class="pub-row">
+      <label>Одобрение (бейдж)
+        <span class="hint">метка доверия</span>
+        <select id="pubReview">
+          <option value="">— не указывать</option>
+          <option value="approved">✓ Одобрено администрацией</option>
+          <option value="caution">⚠ Осторожно, требует проверки</option>
+        </select>
+      </label>
+      <label>Готовность (бейдж)
+        <span class="hint">доработана или нет</span>
+        <select id="pubProgress">
+          <option value="">— не указывать</option>
+          <option value="ready">✔ Доработано</option>
+          <option value="wip">🚧 В работе</option>
+        </select>
+      </label>
+    </div>
     <label>Обложка
       <span class="hint">картинка для полки; пропустишь — будет авто-заглушка</span>
       <input id="pubCover" type="file" accept="image/*">
@@ -1028,11 +1040,12 @@ const els = {
   modal: $("newBlockModal"), nbSource: $("nbSource"), nbLabel: $("nbLabel"),
   nbTitle: $("nbTitle"), nbCreate: $("nbCreate"), nbCancel: $("nbCancel"),
   pubModal: $("pubModal"), pubFolderNote: $("pubFolderNote"), pubId: $("pubId"),
+  pubIdList: $("pubIdList"), pubIdNote: $("pubIdNote"),
   pubTitle: $("pubTitle"), pubSrc: $("pubSrc"), pubTrans: $("pubTrans"),
   pubCat: $("pubCat"), pubCatList: $("pubCatList"), pubAuthor: $("pubAuthor"),
   pubDesc: $("pubDesc"), pubTags: $("pubTags"), pubCover: $("pubCover"),
   pubMadhhab: $("pubMadhhab"), pubGenre: $("pubGenre"), pubVerifiedOnly: $("pubVerifiedOnly"),
-  pubReview: $("pubReview"), pubCancel: $("pubCancel"), pubGo: $("pubGo"),
+  pubReview: $("pubReview"), pubProgress: $("pubProgress"), pubCancel: $("pubCancel"), pubGo: $("pubGo"),
 };
 
 /* ===================== утилиты ===================== */
@@ -1501,6 +1514,7 @@ async function useFile(handle){
    контракт (<!-- sNNN -->, заголовки в s00Na/b жирным, [^N]+<!-- fnN -->,
    <!-- pN -->, раз-линковка вики, выброс арабских строк из ru). */
 const PUB_PAGE_RE = /^<!--\s*(?:ص|p)\s*:?\s*([0-9٠-٩]+)\s*-->$/;
+const PUB_SECTOR_RE = /^<!--\s*(s\d+)[a-z]?\s*-->$/i;   // существующий якорь сектора (гибрид)
 const pubWestern = s => s.replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660));
 const pubDelink = s => s.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2").replace(/\[\[([^\]]+)\]\]/g, "$1");
 const PUB_AR = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
@@ -1515,16 +1529,20 @@ function pubParse(body){
   for(let i = 0; i < lines.length; i++) if(/^\s*\[\^[^\]]+\]:/.test(lines[i])){ cut = i; break; }
   let main = lines.slice(0, cut);
   while(main.length && (main[main.length-1].trim() === "" || main[main.length-1].trim() === "---")) main.pop();
-  const blocks = []; let cur = null, pendingPage = null;
+  const blocks = []; let cur = null, pendingPage = null, pendingId = null;
   const flush = () => { if(cur && cur.lines.length) blocks.push(cur); cur = null; };
   for(const raw of main){
     const l = raw.replace(/\s+$/, "");
     if(l.trim() === "" || l.trim() === "---"){ flush(); continue; }
     const pm = l.trim().match(PUB_PAGE_RE);
     if(pm){ pendingPage = parseInt(pubWestern(pm[1]), 10); continue; }
+    // существующий якорь <!-- sNNN --> — задаёт ID следующему сектору (гибрид):
+    // сохраняем его, чтобы цитаты ar/ru парились по этому ID, а не по перенумерации
+    const sm = l.trim().match(PUB_SECTOR_RE);
+    if(sm){ flush(); pendingId = sm[1].toLowerCase(); continue; }
     const hm = l.match(/^(#{1,6})\s+(.*)$/);
     if(hm){ flush(); const hb = { kind:"heading", lines:[hm[2].trim()] }; if(pendingPage != null){ hb.page = pendingPage; pendingPage = null; } blocks.push(hb); continue; }
-    if(!cur) cur = { kind:"text", lines:[] };
+    if(!cur){ cur = { kind:"text", lines:[], id: pendingId }; pendingId = null; }
     if(pendingPage != null && cur.page == null){ cur.page = pendingPage; pendingPage = null; }
     cur.lines.push(l);
   }
@@ -1552,21 +1570,30 @@ function pubConvert(body, { dropArabic = false } = {}){
   for(const b of blocks){
     if(b.kind === "heading"){ if(b.page != null && pendingPage == null) pendingPage = b.page; heads.push(["**" + renum(b.lines[0]) + "**"]); continue; }
     const page = (b.page != null) ? b.page : pendingPage; pendingPage = null;
-    sectors.push({ page, parts:[...heads, textLines(b)] }); heads = [];
+    sectors.push({ page, parts:[...heads, textLines(b)], id: b.id || null }); heads = [];
   }
-  if(heads.length){ if(sectors.length) sectors[sectors.length-1].parts.push(...heads); else sectors.push({ page:pendingPage, parts:heads }); }
+  if(heads.length){ if(sectors.length) sectors[sectors.length-1].parts.push(...heads); else sectors.push({ page:pendingPage, parts:heads, id:null }); }
 
-  const out = []; let s = 0; const L = "abcdefghijklmnopqrstuvwxyz";
+  // ГИБРИД: если в исходнике были якоря — сохраняем их (цитаты ar/ru парятся по ID),
+  // а абзацам без якоря выдаём свободные ID (пропуская занятые). Иначе (старый
+  // полный параллельный формат) — как раньше, последовательная нумерация s001…
+  const anchored = sectors.some(sec => sec.id);
+  const used = new Set();
+  for(const sec of sectors) if(sec.id){ const n = parseInt(sec.id.slice(1), 10); if(Number.isFinite(n)) used.add(n); }
+  let auto = 0;
+  const nextAuto = () => { do { auto++; } while(used.has(auto)); return "s" + auto; };
+
+  const out = []; let legacy = 0; const L = "abcdefghijklmnopqrstuvwxyz";
   for(const sec of sectors){
     if(sec.page != null) out.push(`<!-- p${sec.page} -->`);
-    s++; const base = `s${String(s).padStart(3, "0")}`;
+    const base = anchored ? (sec.id || nextAuto()) : `s${String(++legacy).padStart(3, "0")}`;
     if(sec.parts.length === 1){ out.push(`<!-- ${base} -->`); for(const l of sec.parts[0]) out.push(l); out.push(""); }
     else sec.parts.forEach((pl, i) => { out.push(`<!-- ${base}${L[i]} -->`); for(const l of pl) out.push(l); out.push(""); });
   }
   for(const def of [...defs].sort((a, b) => map.get(a.key) - map.get(b.key))){
     out.push(`<!-- fn${map.get(def.key)} -->`); for(const l of def.lines) out.push(renum(l)); out.push("");
   }
-  return { content: out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", sectors: s };
+  return { content: out.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", sectors: sectors.length, anchored };
 }
 // записать файл по пути [seg…] внутри dirHandle, создавая папки
 async function pubWrite(dirHandle, segs, content){
@@ -1586,6 +1613,18 @@ async function pubReadJSON(dirHandle, segs){
   }catch{ return null; }
 }
 let pubCtx = null;   // { booksDir, idx } — между выбором папки и подтверждением формы
+// ключ памяти «последний id публикации» для текущей статьи (чтобы не вводить заново)
+function pubMemKey(){ return "vychitka.pubid:" + ((state.rootHandle && state.rootHandle.name) || state.mode || "draft"); }
+// живая подсказка у поля id: обновление существующей книги или новая
+function updatePubIdNote(){
+  if(!pubCtx || !els.pubIdNote) return;
+  const id = els.pubId.value.trim();
+  const prev = id && pubCtx.idx.books.find(x => x.id === id);
+  if(!id){ els.pubIdNote.textContent = "папка под books/ — латиницей. Тот же id = обновить книгу"; els.pubIdNote.className = "hint"; return; }
+  if(prev){ const t = (prev.title && (prev.title.ru || Object.values(prev.title)[0])) || id;
+    els.pubIdNote.textContent = "↻ Обновление книги «" + t + "» (метаданные подтянуты)"; els.pubIdNote.className = "hint pub-id-update"; }
+  else { els.pubIdNote.textContent = "＋ Новая книга — такого id в реестре нет"; els.pubIdNote.className = "hint pub-id-new"; }
+}
 // Шаг 1: выбрать папку books/ читалки, подтянуть реестр и открыть форму публикации
 async function publishToLibrary(){
   if(state.mode !== "folder"){ toast("«Опубликовать в библиотеку» — из папочного режима (source/translation)", true); return; }
@@ -1603,12 +1642,19 @@ async function publishToLibrary(){
   const cats = new Set();
   for(const b of idx.books) if(Array.isArray(b.category) && b.category.length) cats.add(b.category.join(" / "));
   els.pubCatList.innerHTML = [...cats].sort().map(c => `<option value="${esc(c)}">`).join("");
+  // выпадашка существующих id — выбирать, а не печатать (защита от опечатки → дубль)
+  els.pubIdList.innerHTML = idx.books.map(b => `<option value="${esc(b.id)}">`).join("");
   // префилл: название — из первого блока; языки ar/ru
-  els.pubId.value = ""; els.pubTitle.value = (state.blocks[0] && state.blocks[0].title) || "";
+  els.pubTitle.value = (state.blocks[0] && state.blocks[0].title) || "";
   els.pubSrc.value = "ar"; els.pubTrans.value = "ru";
   els.pubCat.value = ""; els.pubAuthor.value = ""; els.pubDesc.value = ""; els.pubTags.value = "";
   els.pubMadhhab.value = ""; els.pubGenre.value = ""; els.pubVerifiedOnly.checked = false;
-  els.pubReview.value = ""; els.pubCover.value = "";
+  els.pubReview.value = ""; els.pubProgress.value = ""; els.pubCover.value = "";
+  // подставить последний id этой статьи и сразу подтянуть её метаданные
+  const remembered = localStorage.getItem(pubMemKey());
+  els.pubId.value = (remembered && idx.books.some(b => b.id === remembered)) ? remembered : "";
+  updatePubIdNote();
+  if(els.pubId.value) await pubPrefillById();
   els.pubModal.hidden = false; els.pubId.focus();
 }
 // при вводе id, совпадающего с существующей книгой — подтянуть её метаданные
@@ -1623,6 +1669,7 @@ async function pubPrefillById(){
   if(Array.isArray(prev.madhhab)) els.pubMadhhab.value = prev.madhhab.join(", ");
   if(Array.isArray(prev.genre)) els.pubGenre.value = prev.genre.join(", ");
   if(prev.review) els.pubReview.value = prev.review;
+  if(prev.progress) els.pubProgress.value = prev.progress;
   const pb = await pubReadJSON(pubCtx.booksDir, [id, "book.json"]);
   if(pb){
     if(pb.description) els.pubDesc.value = pb.description;
@@ -1665,10 +1712,11 @@ async function runPublish(){
         ru = pubConvert(p.body.replace(/^\n+/, "").replace(/\s+$/, ""), { dropArabic: true });
         await pubWrite(booksDir, [id, transLang, file], ru.content);
       }
-      let ar = { content:"", sectors:0 };
+      let ar = { content:"", sectors:0, anchored:false };
       if(b.srcHandle){ ar = pubConvert(await readFile(b.srcHandle), { dropArabic: false }); }
-      // оригинал выдаём только при точном посекторном паритете (иначе глава ru-only)
-      if(ar.sectors > 0 && (!transLang || ar.sectors === ru.sectors)){
+      // оригинал выдаём, если он анкорный (гибрид — парность по ID, паритет не нужен)
+      // ИЛИ при точном посекторном паритете (старый формат). Иначе — заглушка, глава ru-only
+      if(ar.sectors > 0 && (ar.anchored || !transLang || ar.sectors === ru.sectors)){
         await pubWrite(booksDir, [id, srcLang, file], ar.content);
       } else if(b.srcHandle){
         await pubWrite(booksDir, [id, srcLang, file], "<!-- оригинал главы ещё не выровнен посекторно (паритет правится в вычитке) -->\n");
@@ -1712,11 +1760,13 @@ async function runPublish(){
     if(madhhab.length) entry.madhhab = madhhab;
     if(genre.length) entry.genre = genre;
     if(els.pubReview.value) entry.review = els.pubReview.value;
+    if(els.pubProgress.value) entry.progress = els.pubProgress.value;
     if(coverPath) entry.cover = coverPath;
     idx.books = idx.books.filter(x => x.id !== id);
     idx.books.push(entry);
     await pubWrite(booksDir, ["index.json"], JSON.stringify(idx, null, 2) + "\n");
 
+    try{ localStorage.setItem(pubMemKey(), id); }catch{}   // запомнить id для этой статьи
     els.pubModal.hidden = true; pubCtx = null;
     toast(`Опубликовано «${id}»: ${chapters.length} глав${mismatches.length ? `; без оригинала (нет паритета): ${mismatches.length}` : ""}. Осталось закоммитить и запушить читалку.`);
   }catch(e){ console.error(e); toast("Ошибка публикации: " + e.message, true); }
@@ -4487,7 +4537,8 @@ function closePublish(){ els.pubModal.hidden = true; pubCtx = null; }
 els.pubCancel.addEventListener("click", closePublish);
 // НЕ закрываем форму публикации по клику мимо неё (легко промахнуться и потерять
 // заполненное) — только «Отмена» или Escape. Клик по фону гасим.
-els.pubId.addEventListener("change", () => { pubPrefillById(); });
+els.pubId.addEventListener("input", () => { updatePubIdNote(); });
+els.pubId.addEventListener("change", () => { pubPrefillById(); updatePubIdNote(); });
 els.pubGo.addEventListener("click", runPublish);
 
 // настройки
