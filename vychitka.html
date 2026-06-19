@@ -170,7 +170,12 @@
   .dot.review{ background:var(--st-review); }
   .dot.verified{ background:var(--st-verified); }
   .dot.none{ background:transparent; border:1px dashed var(--ink-faint); }
-  .bi-text{ min-width:0; }
+  .bi-text{ min-width:0; flex:1 1 auto; }
+  /* перестановка раздела ▲▼ (папка) — появляется при наведении на блок */
+  .bi-mv{ flex:0 0 auto; display:flex; flex-direction:column; gap:1px; opacity:0; transition:opacity .12s; }
+  .blockitem:hover .bi-mv, .blockitem.active .bi-mv{ opacity:1; }
+  .bi-mv button{ font-size:9px; line-height:1; padding:2px 4px; border:1px solid var(--line); background:var(--panel); color:var(--ink-soft); border-radius:4px; cursor:pointer; }
+  .bi-mv button:hover{ background:var(--sel); color:var(--ink); }
   .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
   .bi-dirty{ font-size:11px; color:var(--unsaved); margin-left:5px; visibility:hidden; }
   .bi-dirty.on{ visibility:visible; }
@@ -632,7 +637,7 @@
       <input class="bh-title" id="bhTitle" placeholder="Заголовок…" title="Заголовок блока (хранится в переводе)">
       <span class="bh-label" id="bhLabel" title="Метка — имя файлов блока"></span>
       <button class="btn-mini" id="renameBtn" title="Переименовать блок — сменить метку (имя файлов и порядок)">переименовать</button>
-      <button class="btn-mini" id="splitBtn" title="Разделить раздел по активному сектору оригинала (сектор и далее — в новый раздел)">разделить</button>
+      <button class="btn-mini" id="splitBtn" title="Разделить раздел по активному сектору (курсор в любом окне — оригинал/перевод; сектор и далее уходят в новый раздел)">разделить</button>
       <span class="spacer"></span>
       <div class="statusbar" id="statusBar">
         <button data-st="todo">todo</button>
@@ -1723,6 +1728,16 @@ async function connectGitHub(owner, repo, branch, token){
     toast("В репозитории не видно блоков — проверьте, что в нём есть папки source/ и translation/ с .md-файлами", true);
 }
 
+// порядок разделов (папка): по явному order: из фронтматтера перевода, иначе — по
+// метке (алфавит). Дефолтный порядок = алфавитный индекс, чтобы order-блоки чисто
+// вставлялись между соседями (order хранится только у переставленных).
+function blockOrder(b){ return b.order != null ? b.order : (b._defOrder != null ? b._defOrder : 0); }
+function sortBlocks(blocks){
+  blocks.sort((a, b) => a.label.localeCompare(b.label));   // базовый алфавит
+  blocks.forEach((b, i) => { b._defOrder = i; });          // дефолт = алфавитный индекс
+  blocks.sort((a, b) => blockOrder(a) - blockOrder(b) || a.label.localeCompare(b.label));
+  return blocks;
+}
 async function scan(){
   if(state.mode === "library") return scanBook();
   // источники по метке (имя файла без .md)
@@ -1731,17 +1746,19 @@ async function scan(){
 
   // переводы: метка из имени, заголовок и статус — из фронтматтера.
   // Читаем параллельно: для GitHub каждый файл — отдельный сетевой запрос
-  const trans = new Map();     // label -> {handle, title, status}
+  const trans = new Map();     // label -> {handle, title, status, order}
   const trFiles = await state.fs.list("translation");
   await Promise.all(trFiles.map(async (f) => {
-    let status = "todo", title = "";
+    let status = "todo", title = "", order = null;
     try{
       const { fmLines } = splitFrontmatter(await readFile(f.handle));
       const s = fmGet(fmLines, "status");
       if(STATUSES.includes(s)) status = s;
       title = fmGet(fmLines, "title") || "";
+      const o = parseFloat(fmGet(fmLines, "order"));
+      if(Number.isFinite(o)) order = o;
     }catch{}
-    trans.set(labelOf(f.name), { handle: f.handle, title, status });
+    trans.set(labelOf(f.name), { handle: f.handle, title, status, order });
   }));
 
   // объединяем по метке
@@ -1753,11 +1770,12 @@ async function scan(){
       label,
       title: t ? t.title : "",
       status: t ? t.status : null,        // null = нет файла перевода
+      order: t ? t.order : null,          // явный порядок (фронтматтер order:)
       srcHandle: sources.get(label) || null,
       trHandle: t ? t.handle : null,
     });
   }
-  blocks.sort((a,b) => a.label.localeCompare(b.label));   // по алфавиту
+  sortBlocks(blocks);
   state.blocks = blocks;
 
   renderCounts();
@@ -1823,13 +1841,20 @@ function renderList(){
     const li = document.createElement("li");
     li.className = "blockitem" + (state.current && state.current.label === b.label ? " active" : "");
     li.dataset.label = b.label;
+    // перестановка ▲▼ — только в папочном режиме и только у разделов с переводом
+    const canMove = state.mode === "folder" && b.trHandle && !q;
     li.innerHTML =
       `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
       `<span class="bi-text">` +
         `<span class="bi-pages">${esc(b.label)}</span><span class="bi-dirty">●</span><br>` +
         `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || b.label)}</span>` +
-      `</span>`;
-    li.addEventListener("click", () => openBlock(b));
+      `</span>` +
+      (canMove ? `<span class="bi-mv"><button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button></span>` : "");
+    li.addEventListener("click", (e) => {
+      const mv = e.target.closest(".bi-up, .bi-down");
+      if(mv){ e.stopPropagation(); moveBlock(b, mv.classList.contains("bi-up") ? -1 : 1); return; }
+      openBlock(b);
+    });
     els.list.appendChild(li);
   }
   updateDirtyUI();
@@ -3123,58 +3148,61 @@ function nextSplitLabel(base){
 async function splitBlock(b){
   if(!b) return;
   if(state.mode === "library"){ toast("Деление главы в режиме книги пока не поддерживается", true); return; }
-  if(!b.srcHandle){ toast("В этом разделе нет оригинала — делить нечего", true); return; }
+  if(!b.srcHandle && !b.trHandle){ toast("В этом разделе нет файлов — делить нечего", true); return; }
   if(state.activeSector == null){
-    toast("Выделите сектор: поставьте курсор в абзац оригинала, с которого начнётся новый раздел", true); return;
+    toast("Поставьте курсор в абзац (в любом окне), с которого начнётся новый раздел", true); return;
   }
   if(state.activeSector === 0){
-    toast("Активный сектор — первый в оригинале; перед ним нет текста для исходного раздела", true); return;
+    toast("Активный сектор — первый; перед ним нет текста для исходного раздела", true); return;
   }
   if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом деление раздела", true); return; }
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
 
-  // читаем свежими с диска (файлы мог менять git/другой инструмент)
-  let origText;
-  try{ origText = await readFile(b.srcHandle); }
-  catch(e){ toast("Не удалось прочитать оригинал: " + e.message, true); return; }
-
-  // активный сектор должен существовать в оригинале (деление идёт по нему)
-  const origSec = sectorsOf(parseBlocks(origText)).find(s => s.idx === state.activeSector);
-  if(!origSec){ toast("В оригинале нет сектора с таким номером — поставьте курсор в абзац оригинала", true); return; }
-
-  let [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
-  if(!origSecond){ toast("После активного сектора нет текста — делить нечего", true); return; }
-  [origFirst, origSecond] = redistributeFootnotes(origFirst, origSecond);
-
-  // перевод (если есть) режем по тому же номеру сектора; фронтматтер исходного сохраняем
-  let trFmLines = null, trFirst = "", trSecond = "";
-  if(b.trHandle){
-    try{
+  // Режем КАЖДОЕ окно по активному сектору независимо (курсор может стоять в
+  // переводе — оригинал не обязателен). Окно без такого сектора целиком остаётся
+  // в исходном разделе: splitTextAtSector вернёт пустую вторую часть.
+  let origFirst = "", origSecond = "", trFmLines = null, trFirst = "", trSecond = "";
+  try{
+    if(b.srcHandle){
+      const origText = await readFile(b.srcHandle);
+      [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
+      if(origSecond) [origFirst, origSecond] = redistributeFootnotes(origFirst, origSecond);
+    }
+    if(b.trHandle){
       const p = splitFrontmatter(await readFile(b.trHandle));
       trFmLines = p.fmLines;
-      [trFirst, trSecond] = splitTextAtSector(p.body.replace(/^\n+/, "").replace(/\s+$/, ""), state.activeSector);
-      [trFirst, trSecond] = redistributeFootnotes(trFirst, trSecond);
-    }catch(e){ toast("Не удалось прочитать перевод: " + e.message, true); return; }
+      const body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
+      [trFirst, trSecond] = splitTextAtSector(body, state.activeSector);
+      if(trSecond) [trFirst, trSecond] = redistributeFootnotes(trFirst, trSecond);
+    }
+  }catch(e){ toast("Не удалось прочитать файлы раздела: " + e.message, true); return; }
+
+  if(!origSecond && !trSecond){
+    toast("После активного сектора нет текста ни в оригинале, ни в переводе — делить нечего", true); return;
   }
 
   const { label: newLabel, index: idx } = nextSplitLabel(b.label);
   const newTitle = b.title ? `${b.title} ${idx}` : "";
   const newStatus = b.status || "todo";
-  const newTrContent = buildTranslation(
-    ["title: " + newTitle, "status: " + newStatus, "glossary_checked: false"], trSecond);
 
   try{
-    // 1) сперва создаём новый раздел и убеждаемся, что записалось
-    const newSrc = await state.fs.getFile("source", `${newLabel}.md`, true);
-    await writeFile(newSrc, origSecond);
-    if((await readFile(newSrc)) !== origSecond) throw new Error("проверка нового оригинала не прошла");
-    const newTr = await state.fs.getFile("translation", `${newLabel}.md`, true);
-    await writeFile(newTr, newTrContent);
-    if((await readFile(newTr)) !== newTrContent) throw new Error("проверка нового перевода не прошла");
+    // 1) сперва создаём новый раздел (только из непустых частей) и проверяем запись
+    if(origSecond){
+      const newSrc = await state.fs.getFile("source", `${newLabel}.md`, true);
+      await writeFile(newSrc, origSecond);
+      if((await readFile(newSrc)) !== origSecond) throw new Error("проверка нового оригинала не прошла");
+    }
+    if(trSecond){
+      const newTrContent = buildTranslation(
+        ["title: " + newTitle, "status: " + newStatus, "glossary_checked: false"], trSecond);
+      const newTr = await state.fs.getFile("translation", `${newLabel}.md`, true);
+      await writeFile(newTr, newTrContent);
+      if((await readFile(newTr)) !== newTrContent) throw new Error("проверка нового перевода не прошла");
+    }
 
-    // 2) только теперь обрезаем исходный раздел (хвост ушёл в новый)
-    await writeFile(b.srcHandle, origFirst);
-    if(b.trHandle) await writeFile(b.trHandle, buildTranslation(trFmLines, trFirst));
+    // 2) только теперь обрезаем исходный раздел — лишь те окна, откуда ушёл хвост
+    if(b.srcHandle && origSecond) await writeFile(b.srcHandle, origFirst);
+    if(b.trHandle && trSecond) await writeFile(b.trHandle, buildTranslation(trFmLines, trFirst));
 
     // содержимое обрезанного раздела на диске изменилось — снять старые черновики
     state.drafts.delete(draftKey(b.label, "source"));
@@ -3186,6 +3214,37 @@ async function splitBlock(b){
     if(cur) await openBlock(cur);
     toast(`Раздел разделён → новый раздел «${newLabel}»`);
   }catch(e){ console.error(e); toast("Ошибка деления: " + e.message, true); }
+}
+
+function formatOrder(n){ return Number.isInteger(n) ? String(n) : String(+n.toFixed(6)); }
+// переставить раздел вверх/вниз (папка): пишем order: во фронтматтер перевода
+// ОДНОГО блока (середина между соседями на новом месте) — все файлы не трогаем,
+// это важно для GitHub-режима (каждая запись = коммит).
+async function moveBlock(b, dir){
+  if(state.mode !== "folder"){ toast("Перестановка разделов — в папочном режиме", true); return; }
+  if(!b || !b.trHandle){ toast("У раздела нет файла перевода — порядок хранить негде", true); return; }
+  if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом перестановка", true); return; }
+  const arr = state.blocks, i = arr.indexOf(b), j = i + dir;
+  if(i < 0) return;
+  if(j < 0 || j >= arr.length){ toast(dir < 0 ? "Это первый раздел" : "Это последний раздел"); return; }
+  // новый order = середина между соседями на целевой позиции j
+  let lo, hi;
+  if(dir < 0){ hi = blockOrder(arr[j]); lo = j - 1 >= 0 ? blockOrder(arr[j - 1]) : hi - 2; }
+  else        { lo = blockOrder(arr[j]); hi = j + 1 < arr.length ? blockOrder(arr[j + 1]) : lo + 2; }
+  const newOrder = (lo + hi) / 2;
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  try{
+    const p = splitFrontmatter(await readFile(b.trHandle));
+    const fm = fmSet(p.fmLines, "order", formatOrder(newOrder));
+    await writeFile(b.trHandle, buildTranslation(fm, p.body.replace(/^\n+/, "").replace(/\s+$/, "")));
+    b.order = newOrder;
+    // если переставляемый раздел открыт — обновить кэш фронтматтера в окне,
+    // иначе следующее сохранение перевода затёрло бы order: (кэш был старый)
+    if(state.current === b)
+      for(const s of state.slots) if(s.role === "translation" && s.fmLines) s.fmLines = fm;
+  }catch(e){ console.error(e); toast("Не удалось записать порядок: " + e.message, true); return; }
+  sortBlocks(arr);
+  renderList();
 }
 
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
