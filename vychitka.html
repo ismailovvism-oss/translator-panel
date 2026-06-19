@@ -729,9 +729,8 @@
       </label>
     </div>
     <label>Раздел (категория)
-      <span class="hint">выбери из списка или впиши новую; вложенность через « / »</span>
-      <input id="pubCat" type="text" list="pubCatList" placeholder="Вероучение (Акыда) / Защита имамов">
-      <datalist id="pubCatList"></datalist>
+      <span class="hint">узел дерева разделов читалки (taxonomy.json)</span>
+      <select id="pubCat"><option value="">— не выбран</option></select>
     </label>
     <label>Автор
       <input id="pubAuthor" type="text" placeholder="Имя автора (необязательно)">
@@ -1042,7 +1041,7 @@ const els = {
   pubModal: $("pubModal"), pubFolderNote: $("pubFolderNote"), pubId: $("pubId"),
   pubIdList: $("pubIdList"), pubIdNote: $("pubIdNote"),
   pubTitle: $("pubTitle"), pubSrc: $("pubSrc"), pubTrans: $("pubTrans"),
-  pubCat: $("pubCat"), pubCatList: $("pubCatList"), pubAuthor: $("pubAuthor"),
+  pubCat: $("pubCat"), pubAuthor: $("pubAuthor"),
   pubDesc: $("pubDesc"), pubTags: $("pubTags"), pubCover: $("pubCover"),
   pubMadhhab: $("pubMadhhab"), pubGenre: $("pubGenre"), pubVerifiedOnly: $("pubVerifiedOnly"),
   pubReview: $("pubReview"), pubProgress: $("pubProgress"), pubCancel: $("pubCancel"), pubGo: $("pubGo"),
@@ -1638,10 +1637,16 @@ async function publishToLibrary(){
   // подсказка-страховка: видно, та ли это папка (сколько книг уже в реестре)
   els.pubFolderNote.textContent = `Папка «${booksDir.name}» · книг в реестре: ${idx.books.length}` +
     (idx.books.length ? ` (${idx.books.map(b => b.id).join(", ")})` : " — пусто, это точно папка books/ читалки?");
-  // список существующих категорий → в datalist (полный путь через « / »)
-  const cats = new Set();
-  for(const b of idx.books) if(Array.isArray(b.category) && b.category.length) cats.add(b.category.join(" / "));
-  els.pubCatList.innerHTML = [...cats].sort().map(c => `<option value="${esc(c)}">`).join("");
+  // дерево разделов читалки → опции селекта (значение = id узла, текст = путь имён)
+  const tax = await pubReadJSON(booksDir, ["taxonomy.json"]);
+  pubCtx.taxNodes = (tax && Array.isArray(tax.categories)) ? tax.categories : [];
+  const taxById = new Map(pubCtx.taxNodes.map(n => [n.id, n]));
+  const pathOf = id => { const out = []; let n = taxById.get(id), seen = new Set();
+    while(n && !seen.has(n.id)){ seen.add(n.id); out.unshift(n.name); n = n.parent ? taxById.get(n.parent) : null; } return out.join(" › "); };
+  const opts = pubCtx.taxNodes.map(n => ({ id: n.id, path: pathOf(n.id) })).sort((a, b) => a.path.localeCompare(b.path, "ru"));
+  els.pubCat.innerHTML = `<option value="">— не выбран</option>` +
+    opts.map(o => `<option value="${esc(o.id)}">${esc(o.path)}</option>`).join("");
+  if(!pubCtx.taxNodes.length) els.pubFolderNote.textContent += " · ⚠ нет taxonomy.json — раздел не выбрать";
   // выпадашка существующих id — выбирать, а не печатать (защита от опечатки → дубль)
   els.pubIdList.innerHTML = idx.books.map(b => `<option value="${esc(b.id)}">`).join("");
   // префилл: название — из первого блока; языки ar/ru
@@ -1663,7 +1668,7 @@ async function pubPrefillById(){
   const id = els.pubId.value.trim();
   const prev = pubCtx.idx.books.find(x => x.id === id);
   if(!prev) return;
-  if(Array.isArray(prev.category)) els.pubCat.value = prev.category.join(" / ");
+  if(prev.category) els.pubCat.value = prev.category;   // id узла дерева
   if(Array.isArray(prev.tags)) els.pubTags.value = prev.tags.join(", ");
   if(Array.isArray(prev.authors) && prev.authors[0]) els.pubAuthor.value = prev.authors[0];
   if(Array.isArray(prev.madhhab)) els.pubMadhhab.value = prev.madhhab.join(", ");
@@ -1687,7 +1692,7 @@ async function runPublish(){
   const srcLang = els.pubSrc.value.trim();
   if(!srcLang){ toast("Укажите язык оригинала", true); els.pubSrc.focus(); return; }
   const transLang = els.pubTrans.value.trim();
-  const category = els.pubCat.value.split("/").map(s => s.trim()).filter(Boolean);
+  const category = els.pubCat.value;   // id узла дерева (taxonomy.json) или ""
   const author = els.pubAuthor.value.trim();
   const description = els.pubDesc.value.trim();
   const tags = els.pubTags.value.split(",").map(s => s.trim()).filter(Boolean);
@@ -1754,7 +1759,7 @@ async function runPublish(){
     // index.json: запись книги — наследуем прежние поля, обновляем заданные в форме
     if(!Array.isArray(idx.books)) idx.books = [];
     const entry = { ...prevEntry, id, base: `books/${id}/`, title: book.title, langs: languages };
-    if(category.length) entry.category = category;
+    if(category) entry.category = category;   // id узла дерева
     if(tags.length) entry.tags = tags;
     if(author) entry.authors = [author];
     if(madhhab.length) entry.madhhab = madhhab;
