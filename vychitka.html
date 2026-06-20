@@ -1269,7 +1269,7 @@ function githubAdapter(cfg){   // {owner, repo, branch, token}
       h.sha = (j.content && j.content.sha) || null;
     },
     async getFile(dir, name, create){
-      const path = dir + "/" + name;
+      const path = dir ? dir + "/" + name : name;   // dir="" → файл в корне (outline.json)
       try{
         const j = await gh("GET", `${base}/contents/${enc(path)}${ref}`);
         return { path, sha: j.sha };
@@ -1708,8 +1708,8 @@ async function runPublish(){
   const genre = els.pubGenre.value.split(",").map(s => s.trim()).filter(Boolean);
   const coverFile = els.pubCover.files[0] || null;
   const titleRu = els.pubTitle.value.trim();
-  // «только готовые»: берём лишь разделы со статусом verified
-  const blocks = els.pubVerifiedOnly.checked ? state.blocks.filter(b => b.status === "verified") : state.blocks;
+  // «только готовые»: берём лишь разделы со статусом verified (обёртки-группы всегда)
+  const blocks = els.pubVerifiedOnly.checked ? state.blocks.filter(b => b.header || b.status === "verified") : state.blocks;
   if(!blocks.length){ toast("Нет разделов со статусом verified — снимите галочку или доведите разделы", true); return; }
 
   els.pubGo.disabled = true;
@@ -1717,6 +1717,10 @@ async function runPublish(){
     const chapters = []; const mismatches = [];
     let bookTitle = titleRu;
     for(const b of blocks){
+      if(b.header){   // обёртка — глава без файла (Часть/كتاب), переносим в book.json как есть
+        chapters.push({ title: b.titleObj || {}, level: clampLvl(b.level), header: true });
+        continue;
+      }
       const file = b.label + ".md";
       let ru = { content:"", sectors:0 }, title = "";
       if(transLang && b.trHandle){
@@ -1736,16 +1740,18 @@ async function runPublish(){
         if(transLang) mismatches.push(`${file}: ${srcLang}=${ar.sectors} ${transLang}=${ru.sectors}`);
       }
       const t = {}; if(transLang) t[transLang] = title || b.label;
-      chapters.push({ file, title: t });
+      const chEntry = { file, title: t };
+      if(b.level) chEntry.level = clampLvl(b.level);   // уровень иерархии главы
+      chapters.push(chEntry);
       if(!bookTitle && title) bookTitle = title;
     }
     const languages = transLang ? [srcLang, transLang] : [srcLang];
     // book.json: НАСЛЕДУЕМ прежние поля (author/description/обложечные настройки не
     // теряем при повторной публикации), перезаписываем только производные от статьи
     const prevBook = (await pubReadJSON(booksDir, [id, "book.json"])) || {};
-    // иерархия глав не теряется при перепубликации: сохраняем группы-заголовки и
-    // уровни прежнего book.json (по совпадению имени файла), новые главы — в конец
-    if(Array.isArray(prevBook.chapters) && prevBook.chapters.length){
+    // иерархия глав не теряется при перепубликации: если у статьи НЕТ своего outline,
+    // наследуем группы-заголовки и уровни прежнего book.json (по имени файла)
+    if(!state.outline && Array.isArray(prevBook.chapters) && prevBook.chapters.length){
       const newByFile = new Map(chapters.map(c => [c.file, c]));
       const merged = [], used = new Set();
       for(const pc of prevBook.chapters){
@@ -2002,10 +2008,10 @@ async function scan(){
 
   // переводы: метка из имени, заголовок и статус — из фронтматтера.
   // Читаем параллельно: для GitHub каждый файл — отдельный сетевой запрос
-  const trans = new Map();     // label -> {handle, title, status, order}
+  const trans = new Map();     // label -> {handle, title, status, order, level}
   const trFiles = await state.fs.list("translation");
   await Promise.all(trFiles.map(async (f) => {
-    let status = "todo", title = "", order = null;
+    let status = "todo", title = "", order = null, level = 0;
     try{
       const { fmLines } = splitFrontmatter(await readFile(f.handle));
       const s = fmGet(fmLines, "status");
@@ -2013,31 +2019,56 @@ async function scan(){
       title = fmGet(fmLines, "title") || "";
       const o = parseFloat(fmGet(fmLines, "order"));
       if(Number.isFinite(o)) order = o;
+      const lv = parseInt(fmGet(fmLines, "level"), 10);
+      if(Number.isFinite(lv)) level = clampLvl(lv);
     }catch{}
-    trans.set(labelOf(f.name), { handle: f.handle, title, status, order });
+    trans.set(labelOf(f.name), { handle: f.handle, title, status, order, level });
   }));
 
   // объединяем по метке
   const labels = new Set([...sources.keys(), ...trans.keys()]);
-  const blocks = [];
+  const fileBlocks = [];
   for(const label of labels){
     const t = trans.get(label);
-    blocks.push({
+    fileBlocks.push({
       label,
       title: t ? t.title : "",
       status: t ? t.status : null,        // null = нет файла перевода
       order: t ? t.order : null,          // явный порядок (фронтматтер order:)
+      level: t ? t.level : 0,             // уровень иерархии (фронтматтер level:)
+      header: false,
       srcHandle: sources.get(label) || null,
       trHandle: t ? t.handle : null,
     });
   }
-  sortBlocks(blocks);
-  state.blocks = blocks;
+  // sidecar outline.json: порядок + file-less обёртки (если есть)
+  const outline = await readOutline();
+  if(outline && Array.isArray(outline.outline)){
+    const byLabel = new Map(fileBlocks.map(b => [b.label, b]));
+    const ordered = []; const used = new Set(); let changed = false;
+    for(const e of outline.outline){
+      if(e && e.wrapper){
+        ordered.push({ label: "", title: wrapperDisplayTitle(e.title), titleObj: e.title || {},
+          status: null, level: clampLvl(e.level), header: true, srcHandle: null, trHandle: null, outlineEntry: e });
+      } else if(e && e.ref && byLabel.has(e.ref) && !used.has(e.ref)){
+        ordered.push(byLabel.get(e.ref)); used.add(e.ref);
+      }
+    }
+    for(const b of fileBlocks) if(!used.has(b.label)){ ordered.push(b); outline.outline.push({ ref: b.label }); changed = true; }
+    if(changed){ try{ await writeOutline(outline); }catch{} }   // новые файлы — в outline
+    state.outline = outline;
+    state.blocks = ordered;
+  } else {
+    sortBlocks(fileBlocks);
+    state.outline = null;
+    state.blocks = fileBlocks;
+  }
 
   renderCounts();
   renderList();
-  if(!blocks.length){ toast("Блоки не найдены", true); }
+  if(!state.blocks.length){ toast("Блоки не найдены", true); }
 }
+function wrapperDisplayTitle(t){ return (t && (t.ru || t.ar || Object.values(t)[0])) || ""; }
 
 // сканирование книги читалки: блоки = главы из book.json (порядок сохраняем),
 // заголовок/статус — из главы, файлы — <lang>/<file> через адаптер
@@ -2102,21 +2133,20 @@ function renderList(){
       if(!hay.includes(q)) continue;
     }
     const li = document.createElement("li");
-    const active = !b.header && state.current && state.current.chapter === b.chapter;
+    const active = !b.header && b.label && state.current && state.current.label === b.label;
     li.className = "blockitem" + (b.header ? " groupitem" : "") + (active ? " active" : "");
     li.dataset.label = b.label;
     if(b.level) li.style.paddingInlineStart = (0.4 + b.level * 0.85) + "rem";
-    // перестановка/уровни: папка — ▲▼ по order; книга — ▲▼ + ←→ уровень + (у группы) ✕
-    const folderMove = state.mode === "folder" && b.trHandle && !q;
-    const libEdit = state.mode === "library" && !q;
-    const ctl = libEdit
+    // иерархия (книга и папка): ←→ уровень, ▲▼ перестановка, ✕ удалить группу
+    const hierEdit = (state.mode === "library" || state.mode === "folder") && !q;
+    const ctl = hierEdit
       ? `<span class="bi-mv">` +
           `<button class="bi-lvl bi-promote" title="Поднять уровень (←)">←</button>` +
           `<button class="bi-lvl bi-demote" title="Понизить уровень (→)">→</button>` +
           `<button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button>` +
           (b.header ? `<button class="bi-del" title="Удалить группу">✕</button>` : "") +
         `</span>`
-      : (folderMove ? `<span class="bi-mv"><button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button></span>` : "");
+      : "";
     if(b.header){
       li.innerHTML =
         `<span class="bi-text"><span class="bi-grouptitle">${esc(b.title || "(группа без названия)")}</span></span>` + ctl;
@@ -2133,8 +2163,7 @@ function renderList(){
       if(e.target.closest(".bi-demote")){ e.stopPropagation(); setBlockLevel(b, 1); return; }
       if(e.target.closest(".bi-del")){ e.stopPropagation(); deleteGroupHeader(b); return; }
       const mv = e.target.closest(".bi-up, .bi-down");
-      if(mv){ e.stopPropagation(); const dir = mv.classList.contains("bi-up") ? -1 : 1;
-        (state.mode === "library" ? moveBookChapter(b, dir) : moveBlock(b, dir)); return; }
+      if(mv){ e.stopPropagation(); moveChapter(b, mv.classList.contains("bi-up") ? -1 : 1); return; }
       if(b.header){ editGroupHeader(b); return; }
       openBlock(b);
     });
@@ -3530,62 +3559,144 @@ async function moveBlock(b, dir){
   renderList();
 }
 
-/* ---- иерархия глав в режиме книги: уровень/порядок/группы → book.json.chapters ---- */
-// изменить уровень главы (← поднять / → понизить), 0–3, запись в book.json
+/* ---- sidecar outline.json (корень статьи): file-less обёртки + порядок ---- */
+function clampLvl(n){ return Math.max(0, Math.min(3, (n) | 0)); }
+async function readOutline(){
+  try{
+    if(state.fs && state.fs.kind === "local" && state.rootHandle){
+      const fh = await state.rootHandle.getFileHandle("outline.json");
+      return JSON.parse(await (await fh.getFile()).text());
+    }
+    if(state.fs && state.fs.kind === "github"){
+      return JSON.parse(await state.fs.read(await state.fs.getFile("", "outline.json", false)));
+    }
+  }catch{}
+  return null;
+}
+async function writeOutline(data){
+  const text = JSON.stringify(data, null, 2) + "\n";
+  if(state.fs && state.fs.kind === "local" && state.rootHandle){
+    const fh = await state.rootHandle.getFileHandle("outline.json", { create: true });
+    const w = await fh.createWritable(); await w.write(text); await w.close(); return;
+  }
+  if(state.fs && state.fs.kind === "github"){
+    await state.fs.write(await state.fs.getFile("", "outline.json", true), text); return;
+  }
+  throw new Error("нет хранилища для outline.json");
+}
+// материализовать outline из текущего порядка блоков (если его ещё нет): рефы
+// файлов (уровень файла — во фронтматтере) + обёртки {wrapper,title,level}
+async function ensureOutline(){
+  if(state.outline && Array.isArray(state.outline.outline)) return state.outline;
+  state.outline = { outline: state.blocks.map(b => b.header
+    ? { wrapper: true, title: b.titleObj || {}, level: clampLvl(b.level) }
+    : { ref: b.label }) };
+  await writeOutline(state.outline);
+  return state.outline;
+}
+
+/* ---- иерархия глав: режим книги (book.json) и папка (outline.json + фронтматтер) ---- */
+// изменить уровень (← поднять / → понизить, 0–3)
 async function setBlockLevel(b, delta){
-  if(state.mode !== "library" || !b.chapter) return;
-  const cur = Math.max(0, Math.min(3, (b.chapter.level) | 0));
-  const next = Math.max(0, Math.min(3, cur + delta));
-  if(next === cur) return;
-  b.chapter.level = next;
-  try{ await saveBookJson(); await scanBook(); }
-  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  if(state.mode === "library"){
+    if(!b.chapter) return;
+    const next = clampLvl(((b.chapter.level) | 0) + delta);
+    if(next === ((b.chapter.level) | 0)) return;
+    b.chapter.level = next;
+    try{ await saveBookJson(); await scanBook(); }catch(e){ console.error(e); toast("Ошибка book.json: " + e.message, true); }
+    return;
+  }
+  if(state.mode !== "folder") return;
+  const next = clampLvl((b.level | 0) + delta);
+  if(next === (b.level | 0)) return;
+  try{
+    if(b.header){                         // обёртка — уровень в outline
+      const o = await ensureOutline(); if(b.outlineEntry) b.outlineEntry.level = next;
+      await writeOutline(o);
+    } else {                              // глава-файл — уровень во фронтматтере перевода
+      if(!b.trHandle){ toast("У раздела нет перевода — уровень хранить негде", true); return; }
+      const p = splitFrontmatter(await readFile(b.trHandle));
+      const fm = fmSet(p.fmLines, "level", String(next));
+      await writeFile(b.trHandle, buildTranslation(fm, p.body.replace(/^\n+/, "").replace(/\s+$/, "")));
+      if(state.current === b) for(const s of state.slots) if(s.role === "translation" && s.fmLines) s.fmLines = fm;
+    }
+    await scan();
+  }catch(e){ console.error(e); toast("Не удалось задать уровень: " + e.message, true); }
 }
-// переставить главу вверх/вниз в массиве chapters (порядок книги)
-async function moveBookChapter(b, dir){
-  if(state.mode !== "library" || !b.chapter) return;
-  const arr = state.book.data.chapters, i = arr.indexOf(b.chapter), j = i + dir;
-  if(i < 0) return;
-  if(j < 0 || j >= arr.length){ toast(dir < 0 ? "Это первая глава" : "Это последняя глава"); return; }
+// переставить раздел/главу вверх/вниз
+async function moveChapter(b, dir){
+  if(state.mode === "library"){
+    if(!b.chapter) return;
+    const arr = state.book.data.chapters, i = arr.indexOf(b.chapter), j = i + dir;
+    if(i < 0 || j < 0 || j >= arr.length){ toast(dir < 0 ? "Это первая глава" : "Это последняя глава"); return; }
+    arr.splice(j, 0, arr.splice(i, 1)[0]);
+    try{ await saveBookJson(); await scanBook(); }catch(e){ console.error(e); toast("Ошибка book.json: " + e.message, true); }
+    return;
+  }
+  if(state.mode !== "folder") return;
+  // без outline и без обёрток — старая перестановка по order-фронтматтеру
+  if(!state.outline && !b.header){ return moveBlock(b, dir); }
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  const o = await ensureOutline();   // блоки 1:1 с o.outline после scan
+  const arr = o.outline, i = state.blocks.indexOf(b), j = i + dir;
+  if(i < 0 || j < 0 || j >= arr.length){ toast(dir < 0 ? "Это первый раздел" : "Это последний раздел"); return; }
   arr.splice(j, 0, arr.splice(i, 1)[0]);
-  try{ await saveBookJson(); await scanBook(); }
-  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+  try{ await writeOutline(o); await scan(); }catch(e){ console.error(e); toast("Не удалось переставить: " + e.message, true); }
 }
-// добавить группу-заголовок (без файла) — двуязычный title {ar, ru}
-async function addGroupHeader(){
-  if(state.mode !== "library"){ toast("Группы — в режиме книги", true); return; }
-  const tl = state.book.transLang || "ru", sl = state.book.srcLang || "ar";
-  const ru = prompt("Заголовок группы (" + tl + "):", "");
-  if(ru === null) return;
-  const ar = prompt("Заголовок группы (" + sl + ", можно пусто):", "");
+function promptGroupTitle(prev){
+  const ru = prompt("Заголовок группы (ru):", (prev && prev.ru) || "");
+  if(ru === null) return null;
+  const ar = prompt("Заголовок группы (ar, можно пусто):", (prev && prev.ar) || "");
   const title = {};
-  if(ru.trim()) title[tl] = ru.trim();
-  if(ar && ar.trim()) title[sl] = ar.trim();
-  if(!Object.keys(title).length){ toast("Пустой заголовок — отменено", true); return; }
-  state.book.data.chapters.push({ title, level: 0, header: true });
-  try{ await saveBookJson(); await scanBook(); toast("Группа добавлена — задай уровень ←→ и место ▲▼"); }
-  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+  if(ru.trim()) title.ru = ru.trim();
+  if(ar && ar.trim()) title.ar = ar.trim();
+  return Object.keys(title).length ? title : null;
+}
+// добавить группу-обёртку (без файла), двуязычную {ar, ru}
+async function addGroupHeader(){
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  if(state.mode === "library"){
+    const title = promptGroupTitle(null); if(!title){ toast("Пустой заголовок — отменено", true); return; }
+    state.book.data.chapters.push({ title, level: 0, header: true });
+    try{ await saveBookJson(); await scanBook(); toast("Группа добавлена — задай уровень ←→ и место ▲▼"); }
+    catch(e){ console.error(e); toast("Ошибка book.json: " + e.message, true); }
+    return;
+  }
+  if(state.mode !== "folder"){ toast("Группы — в режиме книги или папки", true); return; }
+  const title = promptGroupTitle(null); if(!title){ toast("Пустой заголовок — отменено", true); return; }
+  const o = await ensureOutline();
+  o.outline.push({ wrapper: true, title, level: 0 });
+  try{ await writeOutline(o); await scan(); toast("Группа добавлена — задай уровень ←→ и место ▲▼"); }
+  catch(e){ console.error(e); toast("Не удалось добавить группу: " + e.message, true); }
 }
 async function editGroupHeader(b){
-  if(!b.chapter) return;
-  const tl = state.book.transLang || "ru", sl = state.book.srcLang || "ar";
-  const ru = prompt("Заголовок группы (" + tl + "):", (b.chapter.title && b.chapter.title[tl]) || "");
-  if(ru === null) return;
-  const ar = prompt("Заголовок группы (" + sl + ", можно пусто):", (b.chapter.title && b.chapter.title[sl]) || "");
-  const title = {};
-  if(ru.trim()) title[tl] = ru.trim();
-  if(ar && ar.trim()) title[sl] = ar.trim();
-  b.chapter.title = title;
-  try{ await saveBookJson(); await scanBook(); }
-  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+  if(!b.header) return;
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  if(state.mode === "library"){
+    if(!b.chapter) return;
+    const title = promptGroupTitle(b.chapter.title); if(title === null) return;
+    b.chapter.title = title;
+    try{ await saveBookJson(); await scanBook(); }catch(e){ console.error(e); toast("Ошибка book.json: " + e.message, true); }
+    return;
+  }
+  const title = promptGroupTitle(b.titleObj); if(title === null) return;
+  if(b.outlineEntry) b.outlineEntry.title = title;
+  try{ await writeOutline(state.outline); await scan(); }catch(e){ console.error(e); toast("Ошибка: " + e.message, true); }
 }
 async function deleteGroupHeader(b){
-  if(!b.chapter || !b.header) return;
+  if(!b.header) return;
   if(!confirm("Удалить группу «" + (b.title || "") + "»? Главы под ней не удаляются.")) return;
-  const arr = state.book.data.chapters, i = arr.indexOf(b.chapter);
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  if(state.mode === "library"){
+    const arr = state.book.data.chapters, i = arr.indexOf(b.chapter);
+    if(i >= 0) arr.splice(i, 1);
+    try{ await saveBookJson(); await scanBook(); }catch(e){ console.error(e); toast("Ошибка book.json: " + e.message, true); }
+    return;
+  }
+  const arr = state.outline && state.outline.outline, i = arr ? arr.indexOf(b.outlineEntry) : -1;
   if(i >= 0) arr.splice(i, 1);
-  try{ await saveBookJson(); await scanBook(); }
-  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+  try{ await writeOutline(state.outline); await scan(); }catch(e){ console.error(e); toast("Ошибка: " + e.message, true); }
 }
 
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
