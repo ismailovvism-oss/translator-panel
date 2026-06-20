@@ -181,7 +181,7 @@
   .blockitem.groupitem{ background:var(--sel); border-color:var(--line-soft); }
   .bi-grouptitle{ font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; }
   .bi-mv .bi-lvl{ font-size:11px; }
-  .bi-mv .bi-del{ font-size:10px; color:var(--unsaved); }
+  .bi-mv .bi-del, .bi-mv .bi-trash{ font-size:10px; color:var(--unsaved); }
   .filter-wrap #addGroupBtn{ margin-top:6px; width:100%; }
   .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
   .bi-dirty{ font-size:11px; color:var(--unsaved); margin-left:5px; visibility:hidden; }
@@ -2124,7 +2124,7 @@ function renderCounts(){
 
 function renderList(){
   const q = els.filter.value.trim().toLowerCase();
-  if(els.addGroupBtn) els.addGroupBtn.hidden = state.mode !== "library";
+  if(els.addGroupBtn) els.addGroupBtn.hidden = !(state.mode === "library" || state.mode === "folder");
   els.list.classList.toggle("lib-hier", state.mode === "library");  // в книге — контролы всегда видны
   els.list.innerHTML = "";
   for(const b of state.blocks){
@@ -2144,7 +2144,8 @@ function renderList(){
           `<button class="bi-lvl bi-promote" title="Поднять уровень (←)">←</button>` +
           `<button class="bi-lvl bi-demote" title="Понизить уровень (→)">→</button>` +
           `<button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button>` +
-          (b.header ? `<button class="bi-del" title="Удалить группу">✕</button>` : "") +
+          (b.header ? `<button class="bi-del" title="Удалить группу">✕</button>`
+                    : `<button class="bi-trash" title="Удалить раздел (со всеми файлами)">🗑</button>`) +
         `</span>`
       : "";
     if(b.header){
@@ -2162,6 +2163,7 @@ function renderList(){
       if(e.target.closest(".bi-promote")){ e.stopPropagation(); setBlockLevel(b, -1); return; }
       if(e.target.closest(".bi-demote")){ e.stopPropagation(); setBlockLevel(b, 1); return; }
       if(e.target.closest(".bi-del")){ e.stopPropagation(); deleteGroupHeader(b); return; }
+      if(e.target.closest(".bi-trash")){ e.stopPropagation(); deleteChapter(b); return; }
       const mv = e.target.closest(".bi-up, .bi-down");
       if(mv){ e.stopPropagation(); moveChapter(b, mv.classList.contains("bi-up") ? -1 : 1); return; }
       if(b.header){ editGroupHeader(b); return; }
@@ -3406,9 +3408,52 @@ async function renameBlock(b){
 // часть 1 = всё до начала сектора, часть 2 = сектор и всё после. Номера секторов
 // оригинала и перевода параллельны. Если сектора с таким номером в тексте нет —
 // режем насколько возможно: всё уходит в первую часть, вторая пустая.
-function splitTextAtSector(text, ordinal){
-  const sec = sectorsOf(parseBlocks(text)).find(s => s.idx === ordinal);
-  const cut = sec ? sec.start : text.length;
+// точка деления по курсору активного окна: блок (сектор ИЛИ заголовок) при курсоре.
+// Анкорный сектор → делим ВСЕ окна по этому id (пара ar/ru по <!-- sN -->);
+// заголовок → по порядковому среди заголовков; обычный сектор → по порядковому.
+function splitKeyAtCaret(){
+  const slot = fnFollowSlot();
+  if(!slot || !slot.editor) return null;
+  const blocks = parseBlocks(slot.editor.value);
+  const caret = slot.editor.selectionStart;
+  let target = null;
+  for(const bl of blocks){
+    if((bl.type === "sector" || bl.type === "heading") && bl.start <= caret) target = bl;
+    if(bl.start > caret) break;
+  }
+  if(!target) return null;
+  if(target.type === "heading"){
+    const hs = blocks.filter(x => x.type === "heading");
+    return { type: "heading", ord: hs.indexOf(target), label: target.text || "" };
+  }
+  if(target.id != null) return { type: "id", id: target.id, label: target.id };
+  return { type: "ordinal", idx: target.idx, label: "#" + (target.idx + 1) };
+}
+// разрезать текст по точке: возвращает [перед, начиная-с-точки]; нет точки — всё в «перед»
+function splitTextAtPoint(text, key){
+  if(!key) return [text.replace(/\s+$/, ""), ""];
+  const blocks = parseBlocks(text);
+  let cut = text.length;
+  if(key.type === "heading"){
+    const hs = blocks.filter(x => x.type === "heading");
+    if(hs[key.ord]) cut = hs[key.ord].start;
+  } else {
+    const sec = blocks.find(s => s.type === "sector" && (key.type === "id" ? s.id === key.id : s.idx === key.idx));
+    if(sec){
+      cut = sec.start;
+      // якорь <!-- sN --> стоит ОТДЕЛЬНЫМ блоком перед сектором — режем по якорю,
+      // чтобы он ушёл со своим сектором во вторую часть (а не остался в первой)
+      if(sec.id != null){
+        let anchorStart = -1;
+        for(const bl of blocks){
+          if(bl.start >= sec.start) break;
+          const m = bl.type === "comment" && bl.text.match(SECTOR_ANCHOR_RE);
+          if(m && m[1].toLowerCase() === sec.id) anchorStart = bl.start;
+        }
+        if(anchorStart >= 0) cut = anchorStart;
+      }
+    }
+  }
   const first = text.slice(0, cut).replace(/\s+$/, "");
   const second = text.slice(cut).replace(/^\n+/, "").replace(/\s+$/, "");
   return [first, second];
@@ -3460,42 +3505,45 @@ function nextSplitLabel(base){
 async function splitBlock(b){
   if(!b) return;
   if(state.mode === "library"){ toast("Деление главы в режиме книги пока не поддерживается", true); return; }
+  if(b.header){ toast("Это группа-заголовок — делить нечего", true); return; }
   if(!b.srcHandle && !b.trHandle){ toast("В этом разделе нет файлов — делить нечего", true); return; }
-  if(state.activeSector == null){
-    toast("Поставьте курсор в абзац (в любом окне), с которого начнётся новый раздел", true); return;
-  }
-  if(state.activeSector === 0){
-    toast("Активный сектор — первый; перед ним нет текста для исходного раздела", true); return;
+  const key = splitKeyAtCaret();
+  if(!key){
+    toast("Поставьте курсор в абзац или заголовок (в любом окне), с которого начнётся новый раздел", true); return;
   }
   if(anyDirty()){ toast("Сначала сохраните: " + dirtyWindowNames().join(", ") + " — потом деление раздела", true); return; }
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
 
-  // Режем КАЖДОЕ окно по активному сектору независимо (курсор может стоять в
-  // переводе — оригинал не обязателен). Окно без такого сектора целиком остаётся
-  // в исходном разделе: splitTextAtSector вернёт пустую вторую часть.
+  // Режем КАЖДОЕ окно по точке деления: анкорный сектор — по совпадающему id (пара
+  // ar/ru по <!-- sN -->), заголовок — по порядковому, иначе — по порядковому сектору.
+  // Окно без такой точки целиком остаётся в исходном разделе (вторая часть пустая).
   let origFirst = "", origSecond = "", trFmLines = null, trFirst = "", trSecond = "";
   try{
     if(b.srcHandle){
       const origText = await readFile(b.srcHandle);
-      [origFirst, origSecond] = splitTextAtSector(origText, state.activeSector);
+      [origFirst, origSecond] = splitTextAtPoint(origText, key);
       if(origSecond) [origFirst, origSecond] = redistributeFootnotes(origFirst, origSecond);
     }
     if(b.trHandle){
       const p = splitFrontmatter(await readFile(b.trHandle));
       trFmLines = p.fmLines;
       const body = p.body.replace(/^\n+/, "").replace(/\s+$/, "");
-      [trFirst, trSecond] = splitTextAtSector(body, state.activeSector);
+      [trFirst, trSecond] = splitTextAtPoint(body, key);
       if(trSecond) [trFirst, trSecond] = redistributeFootnotes(trFirst, trSecond);
     }
   }catch(e){ toast("Не удалось прочитать файлы раздела: " + e.message, true); return; }
 
   if(!origSecond && !trSecond){
-    toast("После активного сектора нет текста ни в оригинале, ни в переводе — делить нечего", true); return;
+    toast(`После точки «${key.label}» нет текста — делить нечего`, true); return;
+  }
+  if(!origFirst && !trFirst){   // перед точкой пусто в ОБОИХ окнах — раздел опустеет
+    toast("Точка деления — самое начало раздела; перед ней нет текста", true); return;
   }
 
   const { label: newLabel, index: idx } = nextSplitLabel(b.label);
   const newTitle = b.title ? `${b.title} ${idx}` : "";
   const newStatus = b.status || "todo";
+  const lvl = clampLvl(b.level);   // новый раздел наследует уровень исходного (под-главы)
 
   try{
     // 1) сперва создаём новый раздел (только из непустых частей) и проверяем запись
@@ -3505,8 +3553,9 @@ async function splitBlock(b){
       if((await readFile(newSrc)) !== origSecond) throw new Error("проверка нового оригинала не прошла");
     }
     if(trSecond){
-      const newTrContent = buildTranslation(
-        ["title: " + newTitle, "status: " + newStatus, "glossary_checked: false"], trSecond);
+      const fm = ["title: " + newTitle, "status: " + newStatus, "glossary_checked: false"];
+      if(lvl) fm.push("level: " + lvl);
+      const newTrContent = buildTranslation(fm, trSecond);
       const newTr = await state.fs.getFile("translation", `${newLabel}.md`, true);
       await writeFile(newTr, newTrContent);
       if((await readFile(newTr)) !== newTrContent) throw new Error("проверка нового перевода не прошла");
@@ -3516,7 +3565,13 @@ async function splitBlock(b){
     if(b.srcHandle && origSecond) await writeFile(b.srcHandle, origFirst);
     if(b.trHandle && trSecond) await writeFile(b.trHandle, buildTranslation(trFmLines, trFirst));
 
-    // содержимое обрезанного раздела на диске изменилось — снять старые черновики
+    // 3) новый раздел встаёт СРАЗУ после исходного (если есть outline-порядок)
+    if(state.outline && Array.isArray(state.outline.outline)){
+      const i = state.outline.outline.findIndex(e => e.ref === b.label);
+      state.outline.outline.splice(i < 0 ? state.outline.outline.length : i + 1, 0, { ref: newLabel });
+      try{ await writeOutline(state.outline); }catch{}
+    }
+
     state.drafts.delete(draftKey(b.label, "source"));
     state.drafts.delete(draftKey(b.label, "translation"));
 
@@ -3524,7 +3579,7 @@ async function splitBlock(b){
     const cur = state.blocks.find(x => x.label === b.label);
     state.current = null;                  // чтобы openBlock не ловил «несохранённое»
     if(cur) await openBlock(cur);
-    toast(`Раздел разделён → новый раздел «${newLabel}»`);
+    toast(`Раздел разделён по «${key.label}» → новый раздел «${newLabel}»`);
   }catch(e){ console.error(e); toast("Ошибка деления: " + e.message, true); }
 }
 
@@ -3697,6 +3752,32 @@ async function deleteGroupHeader(b){
   const arr = state.outline && state.outline.outline, i = arr ? arr.indexOf(b.outlineEntry) : -1;
   if(i >= 0) arr.splice(i, 1);
   try{ await writeOutline(state.outline); await scan(); }catch(e){ console.error(e); toast("Ошибка: " + e.message, true); }
+}
+// удалить раздел-главу (с файлами) — необратимо
+async function deleteChapter(b){
+  if(b.header) return deleteGroupHeader(b);
+  if(!confirm(`Удалить раздел «${b.title || b.label}» со всеми файлами (оригинал/перевод/варианты)? Это необратимо.`)) return;
+  if(!(await ensureWritable())){ toast("Нет прав на запись", true); return; }
+  try{
+    if(state.mode === "library"){
+      const arr = state.book.data.chapters, i = arr.indexOf(b.chapter), file = b.chapter && b.chapter.file;
+      if(i >= 0) arr.splice(i, 1);
+      await saveBookJson();
+      if(file){ try{ await state.fs.remove("source", file); }catch{} try{ await state.fs.remove("translation", file); }catch{} }
+      await scanBook();
+    } else {
+      const file = b.label + ".md";
+      try{ await state.fs.remove("source", file); }catch{}
+      try{ await state.fs.remove("translation", file); }catch{}
+      try{ for(const v of await state.fs.list("variants")) if(v.name === file || v.name.startsWith(b.label + " ")) await state.fs.remove("variants", v.name); }catch{}
+      if(state.outline){ const i = state.outline.outline.findIndex(e => e.ref === b.label); if(i >= 0){ state.outline.outline.splice(i, 1); await writeOutline(state.outline); } }
+      state.drafts.delete(draftKey(b.label, "source"));
+      state.drafts.delete(draftKey(b.label, "translation"));
+      await scan();
+    }
+    if(state.current && state.current.label === b.label) state.current = null;
+    toast(`Раздел «${b.title || b.label}» удалён`);
+  }catch(e){ console.error(e); toast("Ошибка удаления: " + e.message, true); }
 }
 
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
