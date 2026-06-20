@@ -176,6 +176,7 @@
   .blockitem:hover .bi-mv, .blockitem.active .bi-mv{ opacity:1; }
   .bi-mv button{ font-size:9px; line-height:1; padding:2px 4px; border:1px solid var(--line); background:var(--panel); color:var(--ink-soft); border-radius:4px; cursor:pointer; }
   .bi-mv button:hover{ background:var(--sel); color:var(--ink); }
+  .blocklist.lib-hier .bi-mv{ opacity:1; }   /* в режиме книги контролы всегда видны (тач) */
   /* иерархия глав в режиме книги: группы-заголовки + кнопки уровня */
   .blockitem.groupitem{ background:var(--sel); border-color:var(--line-soft); }
   .bi-grouptitle{ font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; }
@@ -2093,6 +2094,7 @@ function renderCounts(){
 function renderList(){
   const q = els.filter.value.trim().toLowerCase();
   if(els.addGroupBtn) els.addGroupBtn.hidden = state.mode !== "library";
+  els.list.classList.toggle("lib-hier", state.mode === "library");  // в книге — контролы всегда видны
   els.list.innerHTML = "";
   for(const b of state.blocks){
     if(q){
