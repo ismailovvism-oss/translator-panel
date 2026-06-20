@@ -176,6 +176,12 @@
   .blockitem:hover .bi-mv, .blockitem.active .bi-mv{ opacity:1; }
   .bi-mv button{ font-size:9px; line-height:1; padding:2px 4px; border:1px solid var(--line); background:var(--panel); color:var(--ink-soft); border-radius:4px; cursor:pointer; }
   .bi-mv button:hover{ background:var(--sel); color:var(--ink); }
+  /* иерархия глав в режиме книги: группы-заголовки + кнопки уровня */
+  .blockitem.groupitem{ background:var(--sel); border-color:var(--line-soft); }
+  .bi-grouptitle{ font-size:12px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.03em; }
+  .bi-mv .bi-lvl{ font-size:11px; }
+  .bi-mv .bi-del{ font-size:10px; color:var(--unsaved); }
+  .filter-wrap #addGroupBtn{ margin-top:6px; width:100%; }
   .bi-pages{ font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums; }
   .bi-dirty{ font-size:11px; color:var(--unsaved); margin-left:5px; visibility:hidden; }
   .bi-dirty.on{ visibility:visible; }
@@ -629,6 +635,7 @@
   <aside class="sidebar">
     <div class="filter-wrap">
       <input id="filter" type="text" placeholder="Фильтр: заголовок, страницы, статус…">
+      <button id="addGroupBtn" class="btn-mini" title="Добавить группу-заголовок (раздел в дереве глав)" hidden>＋ Группа</button>
     </div>
     <div class="progress-wrap" id="progressWrap" hidden>
       <div class="progress-text" id="progressText"></div>
@@ -1014,7 +1021,7 @@ const els = {
   linkBtn: $("linkBtn"), previewBtn: $("previewBtn"),
   ghOpenBtn: $("ghOpenBtn"), ghModal: $("ghModal"), ghRepo: $("ghRepo"),
   ghBranch: $("ghBranch"), ghToken: $("ghToken"), ghCancel: $("ghCancel"), ghConnect: $("ghConnect"),
-  addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
+  addSlotBtn: $("addSlotBtn"), newBlockBtn: $("newBlockBtn"), addGroupBtn: $("addGroupBtn"), settingsBtn: $("settingsBtn"), counts: $("counts"),
   headsToggle: $("headsToggle"),
   modelsList: $("modelsList"),
   settingsModal: $("settingsModal"), setKey: $("setKey"),
@@ -1735,6 +1742,19 @@ async function runPublish(){
     // book.json: НАСЛЕДУЕМ прежние поля (author/description/обложечные настройки не
     // теряем при повторной публикации), перезаписываем только производные от статьи
     const prevBook = (await pubReadJSON(booksDir, [id, "book.json"])) || {};
+    // иерархия глав не теряется при перепубликации: сохраняем группы-заголовки и
+    // уровни прежнего book.json (по совпадению имени файла), новые главы — в конец
+    if(Array.isArray(prevBook.chapters) && prevBook.chapters.length){
+      const newByFile = new Map(chapters.map(c => [c.file, c]));
+      const merged = [], used = new Set();
+      for(const pc of prevBook.chapters){
+        if(!pc.file){ merged.push(pc); continue; }            // группа-заголовок — сохраняем
+        const nc = newByFile.get(pc.file);
+        if(nc){ if(pc.level != null) nc.level = pc.level; merged.push(nc); used.add(pc.file); }
+      }
+      for(const c of chapters) if(!used.has(c.file)) merged.push(c);  // новые файлы — в конец
+      chapters.length = 0; chapters.push(...merged);
+    }
     const titleLang = transLang || srcLang;
     const book = {
       ...prevBook,
@@ -2026,14 +2046,19 @@ async function scanBook(){
   const blocks = [];
   for(const c of chapters){
     const file = c.file;
-    if(!file) continue;
+    const level = Math.max(0, Math.min(3, (c.level) | 0));
+    const title = (c.title && (c.title[tl] || c.title[sl] || Object.values(c.title)[0])) || "";
+    if(!file){
+      // запись-группа (без файла): заголовок раздела в дереве глав
+      blocks.push({ label: "", title, status: null, header: true, level, srcHandle: null, trHandle: null, chapter: c });
+      continue;
+    }
     const label = labelOf(file) || file;
     let srcHandle = null, trHandle = null;
     try{ srcHandle = await state.fs.getFile("source", file, false); }catch{}
     if(tl){ try{ trHandle = await state.fs.getFile("translation", file, false); }catch{} }
-    const title = (c.title && (c.title[tl] || c.title[sl] || Object.values(c.title)[0])) || "";
     const status = STATUSES.includes(c.status) ? c.status : null;
-    blocks.push({ label, title, status, srcHandle, trHandle, chapter: c });
+    blocks.push({ label, title, status, header: false, level, srcHandle, trHandle, chapter: c });
   }
   state.blocks = blocks;   // порядок — как в book.json (не сортируем)
   renderCounts();
@@ -2067,6 +2092,7 @@ function renderCounts(){
 
 function renderList(){
   const q = els.filter.value.trim().toLowerCase();
+  if(els.addGroupBtn) els.addGroupBtn.hidden = state.mode !== "library";
   els.list.innerHTML = "";
   for(const b of state.blocks){
     if(q){
@@ -2074,20 +2100,40 @@ function renderList(){
       if(!hay.includes(q)) continue;
     }
     const li = document.createElement("li");
-    li.className = "blockitem" + (state.current && state.current.label === b.label ? " active" : "");
+    const active = !b.header && state.current && state.current.chapter === b.chapter;
+    li.className = "blockitem" + (b.header ? " groupitem" : "") + (active ? " active" : "");
     li.dataset.label = b.label;
-    // перестановка ▲▼ — только в папочном режиме и только у разделов с переводом
-    const canMove = state.mode === "folder" && b.trHandle && !q;
-    li.innerHTML =
-      `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
-      `<span class="bi-text">` +
-        `<span class="bi-pages">${esc(b.label)}</span><span class="bi-dirty">●</span><br>` +
-        `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || b.label)}</span>` +
-      `</span>` +
-      (canMove ? `<span class="bi-mv"><button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button></span>` : "");
+    if(b.level) li.style.paddingInlineStart = (0.4 + b.level * 0.85) + "rem";
+    // перестановка/уровни: папка — ▲▼ по order; книга — ▲▼ + ←→ уровень + (у группы) ✕
+    const folderMove = state.mode === "folder" && b.trHandle && !q;
+    const libEdit = state.mode === "library" && !q;
+    const ctl = libEdit
+      ? `<span class="bi-mv">` +
+          `<button class="bi-lvl bi-promote" title="Поднять уровень (←)">←</button>` +
+          `<button class="bi-lvl bi-demote" title="Понизить уровень (→)">→</button>` +
+          `<button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button>` +
+          (b.header ? `<button class="bi-del" title="Удалить группу">✕</button>` : "") +
+        `</span>`
+      : (folderMove ? `<span class="bi-mv"><button class="bi-up" title="Выше">▲</button><button class="bi-down" title="Ниже">▼</button></span>` : "");
+    if(b.header){
+      li.innerHTML =
+        `<span class="bi-text"><span class="bi-grouptitle">${esc(b.title || "(группа без названия)")}</span></span>` + ctl;
+    } else {
+      li.innerHTML =
+        `<span class="dot ${b.status || "none"}" title="${b.status || "нет перевода"}"></span>` +
+        `<span class="bi-text">` +
+          `<span class="bi-pages">${esc(b.label)}</span><span class="bi-dirty">●</span><br>` +
+          `<span class="bi-title${b.title ? "" : " empty"}">${esc(b.title || b.label)}</span>` +
+        `</span>` + ctl;
+    }
     li.addEventListener("click", (e) => {
+      if(e.target.closest(".bi-promote")){ e.stopPropagation(); setBlockLevel(b, -1); return; }
+      if(e.target.closest(".bi-demote")){ e.stopPropagation(); setBlockLevel(b, 1); return; }
+      if(e.target.closest(".bi-del")){ e.stopPropagation(); deleteGroupHeader(b); return; }
       const mv = e.target.closest(".bi-up, .bi-down");
-      if(mv){ e.stopPropagation(); moveBlock(b, mv.classList.contains("bi-up") ? -1 : 1); return; }
+      if(mv){ e.stopPropagation(); const dir = mv.classList.contains("bi-up") ? -1 : 1;
+        (state.mode === "library" ? moveBookChapter(b, dir) : moveBlock(b, dir)); return; }
+      if(b.header){ editGroupHeader(b); return; }
       openBlock(b);
     });
     els.list.appendChild(li);
@@ -3482,6 +3528,64 @@ async function moveBlock(b, dir){
   renderList();
 }
 
+/* ---- иерархия глав в режиме книги: уровень/порядок/группы → book.json.chapters ---- */
+// изменить уровень главы (← поднять / → понизить), 0–3, запись в book.json
+async function setBlockLevel(b, delta){
+  if(state.mode !== "library" || !b.chapter) return;
+  const cur = Math.max(0, Math.min(3, (b.chapter.level) | 0));
+  const next = Math.max(0, Math.min(3, cur + delta));
+  if(next === cur) return;
+  b.chapter.level = next;
+  try{ await saveBookJson(); await scanBook(); }
+  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+}
+// переставить главу вверх/вниз в массиве chapters (порядок книги)
+async function moveBookChapter(b, dir){
+  if(state.mode !== "library" || !b.chapter) return;
+  const arr = state.book.data.chapters, i = arr.indexOf(b.chapter), j = i + dir;
+  if(i < 0) return;
+  if(j < 0 || j >= arr.length){ toast(dir < 0 ? "Это первая глава" : "Это последняя глава"); return; }
+  arr.splice(j, 0, arr.splice(i, 1)[0]);
+  try{ await saveBookJson(); await scanBook(); }
+  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+}
+// добавить группу-заголовок (без файла) — двуязычный title {ar, ru}
+async function addGroupHeader(){
+  if(state.mode !== "library"){ toast("Группы — в режиме книги", true); return; }
+  const tl = state.book.transLang || "ru", sl = state.book.srcLang || "ar";
+  const ru = prompt("Заголовок группы (" + tl + "):", "");
+  if(ru === null) return;
+  const ar = prompt("Заголовок группы (" + sl + ", можно пусто):", "");
+  const title = {};
+  if(ru.trim()) title[tl] = ru.trim();
+  if(ar && ar.trim()) title[sl] = ar.trim();
+  if(!Object.keys(title).length){ toast("Пустой заголовок — отменено", true); return; }
+  state.book.data.chapters.push({ title, level: 0, header: true });
+  try{ await saveBookJson(); await scanBook(); toast("Группа добавлена — задай уровень ←→ и место ▲▼"); }
+  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+}
+async function editGroupHeader(b){
+  if(!b.chapter) return;
+  const tl = state.book.transLang || "ru", sl = state.book.srcLang || "ar";
+  const ru = prompt("Заголовок группы (" + tl + "):", (b.chapter.title && b.chapter.title[tl]) || "");
+  if(ru === null) return;
+  const ar = prompt("Заголовок группы (" + sl + ", можно пусто):", (b.chapter.title && b.chapter.title[sl]) || "");
+  const title = {};
+  if(ru.trim()) title[tl] = ru.trim();
+  if(ar && ar.trim()) title[sl] = ar.trim();
+  b.chapter.title = title;
+  try{ await saveBookJson(); await scanBook(); }
+  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+}
+async function deleteGroupHeader(b){
+  if(!b.chapter || !b.header) return;
+  if(!confirm("Удалить группу «" + (b.title || "") + "»? Главы под ней не удаляются.")) return;
+  const arr = state.book.data.chapters, i = arr.indexOf(b.chapter);
+  if(i >= 0) arr.splice(i, 1);
+  try{ await saveBookJson(); await scanBook(); }
+  catch(e){ console.error(e); toast("Ошибка записи book.json: " + e.message, true); }
+}
+
 // создать новый блок из вставленного оригинала (+ метка + заголовок)
 async function createBlock(label, title, sourceText){
   if(!(await ensureWritable())){ toast("Нет прав на запись", true); return false; }
@@ -4527,6 +4631,7 @@ function openNewBlock(){
   els.modal.hidden = false; els.nbLabel.focus();
 }
 function closeNewBlock(){ els.modal.hidden = true; }
+els.addGroupBtn.addEventListener("click", addGroupHeader);
 els.newBlockBtn.addEventListener("click", openNewBlock);
 els.nbCancel.addEventListener("click", closeNewBlock);
 els.modal.addEventListener("click", (e) => { if(e.target === els.modal) closeNewBlock(); });
